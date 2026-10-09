@@ -68,7 +68,7 @@ neon_art.py  prozeduraler Art-/Wallpaper-Generator (PNG, ohne Display)
 `neon_art.py` erzeugt Wallpaper und Key-Art im Look des Spiels – wie die
 Sounds und die Spielgrafik selbst komplett aus Zahlen berechnet, ohne eine
 einzige Bilddatei als Vorlage. Läuft ohne Display (nur `numpy`) und schreibt
-PNGs.
+PNGs. **19 Motive**, alle per Seed reproduzierbar.
 
 ```bash
 python neon_art.py --list
@@ -85,6 +85,44 @@ Vier Motive, jedes mit eigenem Seed reproduzierbar:
 | `burst` – Explosion | `tunnel` – Vortex |
 |---|---|
 | ![burst](art/burst.png) | ![tunnel](art/tunnel.png) |
+
+### Die 15 weiteren Motive
+
+| `city` – Skyline mit Wasser-Spiegelung | `ridges` – Bergketten mit Nebel |
+|---|---|
+| ![city](art/city.png) | ![ridges](art/ridges.png) |
+
+| `aurora` – Polarlicht | `eclipse` – Sonnenfinsternis |
+|---|---|
+| ![aurora](art/aurora.png) | ![eclipse](art/eclipse.png) |
+
+| `plasma` – Interferenz-Muster | `topo` – Höhenlinien-Topografie |
+|---|---|
+| ![plasma](art/plasma.png) | ![topo](art/topo.png) |
+
+| `circuit` – Leiterplatte | `rain` – Neon-Regen |
+|---|---|
+| ![circuit](art/circuit.png) | ![rain](art/rain.png) |
+
+| `fireworks` – Feuerwerk | `galaxy` – Spiralgalaxie |
+|---|---|
+| ![fireworks](art/fireworks.png) | ![galaxy](art/galaxy.png) |
+
+| `highway` – Autobahn-Lichtspuren | `shards` – Glas-Facetten |
+|---|---|
+| ![highway](art/highway.png) | ![shards](art/shards.png) |
+
+| `eq` – Audio-Visualizer | `lightning` – Gewitterblitze |
+|---|---|
+| ![eq](art/eq.png) | ![lightning](art/lightning.png) |
+
+| `orbit` – Planet mit Ringen |
+|---|
+| ![orbit](art/orbit.png) |
+
+Alle 19 Motive auf einen Blick (jeweils Seed 42, 640×360):
+
+![Übersicht aller Motive](art/_sheet.png)
 
 ## Dateien
 

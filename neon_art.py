@@ -44,7 +44,9 @@ except Exception:                                    # standalone nutzbar
         "bg_bot": (22, 6, 44),
     }
 
-MOTIFS = ("grid", "nebula", "burst", "tunnel")
+MOTIFS = ("grid", "nebula", "burst", "tunnel", "city", "ridges", "aurora",
+          "eclipse", "plasma", "topo", "circuit", "rain", "fireworks",
+          "galaxy", "highway", "shards", "eq", "lightning", "orbit")
 
 
 # ---------------------------------------------------------------- PNG ---
@@ -101,19 +103,17 @@ def colorize(mask, color):
     return mask[..., None] * c
 
 
-def value_noise(w, h, cells, rng):
-    """Glattes Zufallsraster, bilinear interpoliert."""
-    cy = max(2, int(cells * h / max(w, h)))
-    cx = max(2, int(cells * w / max(w, h)))
+def smooth_noise(w, h, cx, cy, rng):
+    """Glatte Interpolation eines cx × cy Zufallsrasters."""
     grid = rng.random((cy + 1, cx + 1)).astype(np.float32)
     ys = np.linspace(0, cy, h, dtype=np.float32)
     xs = np.linspace(0, cx, w, dtype=np.float32)
     y0 = np.clip(np.floor(ys).astype(np.int32), 0, cy - 1)
     x0 = np.clip(np.floor(xs).astype(np.int32), 0, cx - 1)
-    fy = (ys - y0)[:, None]
-    fx = (xs - x0)[None, :]
-    fy = fy * fy * (3.0 - 2.0 * fy)
-    fx = fx * fx * (3.0 - 2.0 * fx)
+    fy = ys - y0
+    fx = xs - x0
+    fy = (fy * fy * (3.0 - 2.0 * fy))[:, None]
+    fx = (fx * fx * (3.0 - 2.0 * fx))[None, :]
     g00 = grid[np.ix_(y0, x0)]
     g10 = grid[np.ix_(y0 + 1, x0)]
     g01 = grid[np.ix_(y0, x0 + 1)]
@@ -121,6 +121,13 @@ def value_noise(w, h, cells, rng):
     top = g00 * (1 - fx) + g01 * fx
     bot = g10 * (1 - fx) + g11 * fx
     return top * (1 - fy) + bot * fy
+
+
+def value_noise(w, h, cells, rng):
+    """Glattes Rauschen mit 'cells' Zellen auf der langen Achse."""
+    cy = max(2, int(cells * h / max(w, h)))
+    cx = max(2, int(cells * w / max(w, h)))
+    return smooth_noise(w, h, cx, cy, rng)
 
 
 def fbm(w, h, cells, octaves, rng):
@@ -143,6 +150,44 @@ def stars(w, h, rng, count, bright=1.0, r=1):
     power = rng.random(count) ** 4.0
     np.add.at(layer, (ys, xs), (0.25 + power) * bright)
     return blur(layer, r, passes=2)
+
+
+def ramp(t, stops):
+    """Farbfahrplan: t (H, W) 0..1 -> RGB (H, W, 3) in 0..1."""
+    cols = np.asarray([np.asarray(c, np.float32) / 255.0 for c in stops],
+                      np.float32)
+    n = len(stops) - 1
+    x = np.clip(t, 0.0, 1.0) * n
+    i = np.clip(np.floor(x).astype(np.int32), 0, n - 1)
+    f = (x - i)[..., None]
+    return cols[i] * (1.0 - f) + cols[i + 1] * f
+
+
+def line_mask(w, h, pts, width=4.0, core_boost=2.5):
+    """Maske für eine Polylinie: scharfer Kern plus weicher Glow."""
+    delta = np.zeros((h, w), np.float32)
+    for (x0, y0), (x1, y1) in zip(pts[:-1], pts[1:]):
+        dx, dy = x1 - x0, y1 - y0
+        n = int(max(abs(dx), abs(dy)) / 0.7) + 2
+        t = np.linspace(0.0, 1.0, n)
+        xi = np.clip((x0 + dx * t).astype(np.int32), 0, w - 1)
+        yi = np.clip((y0 + dy * t).astype(np.int32), 0, h - 1)
+        np.add.at(delta, (yi, xi), 1.0)
+    core = blur(np.clip(delta, 0, 1), 1, passes=1)
+    glow = blur(delta, width, passes=2)
+    return np.clip(core * core_boost, 0.0, 1.0) + glow * 0.7
+
+
+def dot(canvas, x, y, r, amp=1.0):
+    """Weichen Punkt (Glow) in eine 2D-Maske schreiben."""
+    hh, w = canvas.shape
+    x0, x1 = int(max(0, x - r * 3)), int(min(w, x + r * 3 + 1))
+    y0, y1 = int(max(0, y - r * 3)), int(min(hh, y + r * 3 + 1))
+    if x1 <= x0 or y1 <= y0:
+        return
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    d2 = (xx - x) ** 2 + (yy - y) ** 2
+    canvas[y0:y1, x0:x1] += amp * np.exp(-d2 / (2.0 * r * r))
 
 
 # ----------------------------------------------------------- Look -------
@@ -411,8 +456,731 @@ def m_tunnel(w, h, rng, seed):
     return finish(img, w, h, seed, vig=0.55, lines=0.045)
 
 
+def m_city(w, h, rng, seed):
+    """Neon-Skyline mit Spiegelung im Wasser."""
+    hzn = int(h * 0.62)
+    img = sky(w, h, (5, 5, 22), (48, 8, 68))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+
+    sky_mask = np.zeros((h, w), np.float32)
+    sky_mask[:max(1, hzn - 30)] = 1.0
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 5000), 0.85) *
+                               sky_mask, PALETTE["white"]))
+
+    # Mond
+    mcx, mcy, mr = w * 0.76, h * 0.20, h * 0.07
+    md = np.sqrt((xs - mcx) ** 2 + (ys - mcy) ** 2)
+    moon = np.clip(1.0 - md / mr, 0.0, 1.0) ** 0.35 * (md < mr)
+    img = screen(img, colorize(blur(moon, max(w, h) // 26, 2) * 0.40,
+                               PALETTE["cyan"]))
+    img = screen(img, colorize(moon * 0.95, (235, 238, 255)))
+
+    # Gebäude: Körper, Kanten, Fenster
+    body = np.zeros((h, w), np.float32)
+    edge_c = np.zeros((h, w), np.float32)
+    edge_m = np.zeros((h, w), np.float32)
+    win_a = np.zeros((h, w), np.float32)
+    win_b = np.zeros((h, w), np.float32)
+    x = -int(rng.integers(10, 70))
+    while x < w:
+        bw = int(rng.integers(38, 115))
+        top = int(hzn - rng.integers(int(h * 0.10), int(h * 0.45)))
+        x0, x1 = max(0, x), min(w, x + bw)
+        x += bw + int(rng.integers(0, 6))
+        if x1 - x0 < 6 or top > hzn - 20:
+            continue
+        body[top:hzn, x0:x1] = 1.0
+        edge = edge_c if rng.random() < 0.62 else edge_m
+        edge[top:hzn, x0] = 1.0
+        edge[top:hzn, x1 - 1] = 1.0
+        edge[top, x0:x1] = 1.0
+        if rng.random() < 0.35:                     # Antenne
+            edge[max(0, top - int(h * 0.05)):top,
+                 (x0 + x1) // 2] = 1.0
+        hh, ww = hzn - top, x1 - x0
+        wy = np.arange(6, max(7, hh - 5), 13)
+        wx = np.arange(4, max(5, ww - 5), 10)
+        if len(wy) and len(wx):
+            on = rng.random((len(wy), len(wx))) < 0.45
+            tgt = win_a if rng.random() < 0.68 else win_b
+            for iy in range(len(wy)):
+                for ix in range(len(wx)):
+                    if on[iy, ix]:
+                        yy = top + int(wy[iy])
+                        xx = x0 + int(wx[ix])
+                        tgt[yy:yy + 6, xx:xx + 4] = 1.0
+
+    depth = np.clip(ys / max(1, hzn), 0, 1)
+    fill = (0.050 + 0.025 * depth)[..., None] * \
+        np.asarray((1.0, 0.9, 1.35), np.float32)
+    img = img * (1 - body[..., None]) + fill * body[..., None]
+
+    img = screen(img, colorize(blur(win_a, 1, 1) * 0.95, (255, 210, 130)))
+    img = screen(img, colorize(blur(win_b, 1, 1) * 0.90, PALETTE["cyan"]))
+    img = screen(img, colorize(blur(win_a, 6, 2) * 0.30, (255, 190, 110)))
+    img = screen(img, colorize(blur(win_b, 6, 2) * 0.30, PALETTE["cyan"]))
+    img = screen(img, colorize(edge_c * 0.9, PALETTE["cyan"]))
+    img = screen(img, colorize(edge_m * 0.9, PALETTE["magenta"]))
+    img = screen(img, colorize(blur(edge_c, 4, 2) * 0.45, PALETTE["cyan"]))
+    img = screen(img, colorize(blur(edge_m, 4, 2) * 0.45, PALETTE["magenta"]))
+
+    glow = np.exp(-((ys - hzn) ** 2) / (2 * (h * 0.010) ** 2))
+    img = screen(img, colorize(glow * 0.5, PALETTE["magenta"]))
+
+    # Spiegelung im Wasser
+    rh = h - hzn
+    src = img[hzn - rh:hzn][::-1].copy()
+    ramp_y = np.arange(rh, dtype=np.float32)
+    off = np.sin(ramp_y * 0.11 + seed * 0.7) * (1.5 + 4.0 * ramp_y / rh)
+    idx = np.clip(np.arange(w)[None, :] + off.astype(np.int32)[:, None],
+                  0, w - 1)
+    refl = np.take_along_axis(src, np.repeat(idx[..., None], 3, axis=2), axis=1)
+    fade = np.clip(1.0 - ramp_y / (rh * 1.15), 0, 1)[:, None, None] ** 1.3
+    refl = blur(refl * fade * 0.6, 2, 2)
+    ripple = 0.5 + 0.5 * np.sin(ys[hzn:] * 0.30 +
+                                np.sin(xs[hzn:] * 0.017) * 2.5)
+    water = np.asarray((0.05, 0.04, 0.13), np.float32)
+    img[hzn:] = refl + water * (0.75 + 0.5 * ripple[..., None])
+    return finish(img, w, h, seed, vig=0.55, lines=0.045)
+
+
+def m_ridges(w, h, rng, seed):
+    """Mehrschichtige Bergketten mit Nebel und Tiefenstaffelung."""
+    img = sky(w, h, (4, 5, 22), (62, 12, 74))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    sky_mask = np.ones((h, w), np.float32)
+    sky_mask[int(h * 0.5):] = 0.0
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 4200), 0.85) *
+                               sky_mask, PALETTE["white"]))
+
+    scx, scy, sr = w * 0.64, h * 0.52, h * 0.15
+    sd = np.sqrt((xs - scx) ** 2 + (ys - scy) ** 2)
+    img = screen(img, colorize(np.exp(-(sd / (sr * 1.6)) ** 2) * 0.70,
+                               PALETTE["orange"]))
+    img = screen(img, colorize(np.clip(1 - sd / sr, 0, 1) ** 0.6 * 0.75 *
+                               (sd < sr), PALETTE["yellow"]))
+
+    cols = [(46, 34, 88), (34, 24, 68), (24, 17, 50), (14, 11, 34), (6, 6, 18)]
+    accents = [PALETTE["cyan"], PALETTE["magenta"], PALETTE["purple"],
+               PALETTE["blue"], PALETTE["cyan"]]
+    layers = len(cols)
+    for i in range(layers):
+        t = i / (layers - 1)
+        prof = smooth_noise(w, 12, 7 + i * 3, 5, rng)[5]
+        prof = 1.0 - np.abs(2.0 * prof - 1.0)          # Bergkämme
+        prof = prof ** (1.15 + 0.25 * i)
+        prof = np.convolve(np.pad(prof, 6, mode="edge"),
+                           np.ones(11) / 11, "same")[6:-6]   # Kontur glätten
+        prof = (prof - prof.min()) / (np.ptp(prof) + 1e-6)
+        base = h * (0.46 + 0.10 * i)
+        amp = h * (0.30 - 0.045 * i)
+        prof_y = base - amp * prof
+        below = ys >= prof_y[None, :]
+        col = np.asarray(cols[i], np.float32) / 255.0
+        shade = 1.0 - 0.30 * smoothstep(ys - prof_y[None, :], 0.0,
+                                        h * 0.30)[..., None]
+        img = np.where(below[..., None], col[None, None, :] * shade, img)
+        mist = np.exp(-((prof_y[None, :] - ys) / (h * 0.035)) ** 2)
+        mist = np.where(ys < prof_y[None, :], mist, 0.0)
+        haze = ramp(np.full((1, 1), t, np.float32),
+                    [(150, 170, 220), (255, 150, 190)])[0, 0]
+        img = screen(img, mist[..., None] * haze[None, None, :] *
+                     (0.03 + 0.09 * (1 - 0.5 * t)))
+        rim = np.exp(-((ys - prof_y[None, :]) ** 2) / (2 * (h * 0.0032) ** 2))
+        rim = np.where(ys < prof_y[None, :], rim, 0.0)
+        img = screen(img, colorize(rim * (0.85 - 0.45 * t), accents[i]))
+    return finish(img, w, h, seed, vig=0.55, lines=0.045)
+
+
+def m_aurora(w, h, rng, seed):
+    """Polarlicht-Bänder über Sternenhimmel und dunklem Boden."""
+    img = sky(w, h, (2, 4, 16), (7, 9, 32))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 2600), 1.0),
+                               PALETTE["white"]))
+    cols = [PALETTE["green"], PALETTE["cyan"], PALETTE["magenta"],
+            PALETTE["purple"]]
+    for i, c in enumerate(cols):
+        base = h * (0.16 + 0.16 * i)
+        amp = h * (0.22 - 0.03 * i)
+        curve = smooth_noise(w, 6, 5 + i * 2, 4, rng)[2]
+        curve = base + amp * (curve - 0.5) * 2.0
+        width = h * (0.075 + 0.018 * i)
+        d = (ys - curve[None, :])
+        band = np.exp(-(d / width) ** 2)
+        # nach unten auslaufende Schleier
+        tail = np.where(d > 0, np.exp(-d / (width * 1.9)), 0.0) * 0.55
+        rays = 0.22 + 0.78 * smooth_noise(w, h, 45, 6, rng) ** 1.2
+        inten = np.clip((band + tail) * rays * (0.66 - 0.08 * i), 0.0, 1.0)
+        img = screen(img, colorize(inten, c))
+        edge = np.exp(-((d + width * 0.35) / (width * 0.30)) ** 2) * 0.6
+        img = screen(img, colorize(np.clip(edge * rays * (0.45 - 0.07 * i),
+                                           0, 1), PALETTE["white"]))
+
+    prof = smooth_noise(w, 8, 5, 3, rng)[4]
+    ground_y = h * 0.88 - h * 0.05 * prof
+    below = ys >= ground_y[None, :]
+    gcol = np.asarray((5, 6, 14), np.float32) / 255.0
+    img = np.where(below[..., None], gcol[None, None, :], img)
+    rim = np.exp(-((ys - ground_y[None, :]) ** 2) / (2 * (h * 0.003) ** 2))
+    rim = np.where(ys < ground_y[None, :], rim, 0.0)
+    img = screen(img, colorize(rim * 0.7, PALETTE["cyan"]))
+    return finish(img, w, h, seed, vig=0.6, lines=0.04)
+
+
+def m_eclipse(w, h, rng, seed):
+    """Sonnenfinsternis mit Corona und anamorphem Lichtstreifen."""
+    img = sky(w, h, (3, 3, 16), (18, 5, 44))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 3200), 1.1),
+                               PALETTE["white"]))
+    cx, cy, r0 = w * 0.5, h * 0.45, h * 0.21
+    dx, dy = xs - cx, ys - cy
+    dist = np.sqrt(dx * dx + dy * dy)
+    rad = np.clip(dist - r0, 0.0, None)
+    ang = np.arctan2(dy, dx)
+
+    steps = 1024
+    spikes = rng.random(steps).astype(np.float32) ** 3.0
+    spikes = np.convolve(np.r_[spikes, spikes, spikes],
+                         np.ones(11) / 11, "same")[steps:2 * steps]
+    idx = ((ang + np.pi) / (2 * np.pi) * steps).astype(np.int32) % steps
+    spike = spikes[idx] * np.exp(-rad / (r0 * 0.75)) * (dist >= r0)
+    corona = np.exp(-rad / (r0 * 0.30)) * (dist >= r0)
+    streak = np.exp(-(dy ** 2) / (2 * (h * 0.006) ** 2)) * \
+        np.exp(-np.abs(dx) / (w * 0.40))
+    glow = corona + spike * 1.1 + streak * 0.7
+    img = screen(img, colorize(np.clip(glow, 0, 2) * 0.85, (215, 235, 255)))
+    img = screen(img, colorize(np.exp(-rad / (r0 * 0.55)) * 0.5 *
+                               (dist >= r0), PALETTE["magenta"]))
+
+    disc = (dist < r0).astype(np.float32)
+    img = img * (1 - disc[..., None]) + \
+        np.asarray((3, 3, 10), np.float32)[None, None] / 255.0 * disc[..., None]
+    rim = np.exp(-((dist - r0) ** 2) / (2 * (h * 0.0035) ** 2))
+    img = screen(img, colorize(rim * 0.95, (255, 250, 240)))
+    return finish(img, w, h, seed, vig=0.55, lines=0.045)
+
+
+def m_plasma(w, h, rng, seed):
+    """Klassische Plasma-Interference im Neon-Look."""
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    x = xs / w * 7.0
+    y = ys / h * 4.5
+    r = np.sqrt((xs - w * 0.5) ** 2 + (ys - h * 0.5) ** 2) / (h * 0.5)
+    v = (np.sin(x * 1.7 + 0.6) + np.sin(y * 2.3 - 0.4) +
+         np.sin((x + y) * 1.15 + 1.3) + np.sin(r * 6.5 + 0.8)) / 4.0
+    t = 0.5 + 0.5 * v
+    img = ramp(t, [(4, 3, 16), (52, 16, 100), (0, 165, 200), (5, 3, 20),
+                   (215, 35, 150), (4, 2, 14)]) * 0.92
+    bright = np.clip(t - 0.82, 0, 1) * 3.0
+    img = screen(img, colorize(blur(bright, max(w, h) // 70, 2) * 0.45,
+                               PALETTE["cyan"]))
+    return finish(img, w, h, seed, vig=0.6, lines=0.05)
+
+
+def m_topo(w, h, rng, seed):
+    """Neon-Höhenlinien-Topografie."""
+    f = fbm(w, h, 4, 5, rng)
+    f = (f - f.min()) / (np.ptp(f) + 1e-6)
+    lvl = f * 24.0
+    d = lvl - np.round(lvl)
+    gy, gx = np.gradient(lvl)
+    g = np.sqrt(gy * gy + gx * gx) + 1e-5
+    sigma = np.maximum(0.5 * g, 0.004)
+    line = np.exp(-(d * d) / (2 * sigma * sigma))
+    idxv = np.round(lvl).astype(np.int32)
+    major = ((idxv % 5) == 0).astype(np.float32)
+
+    img = ramp(f, [(7, 9, 30), (26, 16, 62), (60, 24, 96),
+                   (14, 46, 84), (10, 24, 60)]) * 0.8
+    img = screen(img, colorize(line * (0.30 + 0.45 * major), PALETTE["cyan"]))
+    img = screen(img, colorize(line * major * 0.55, PALETTE["magenta"]))
+    peak = (f > 0.92).astype(np.float32)
+    img = screen(img, colorize(blur(peak, max(w, h) // 90, 2) * 0.55,
+                               PALETTE["yellow"]))
+    return finish(img, w, h, seed, vig=0.5, lines=0.04)
+
+
+def m_circuit(w, h, rng, seed):
+    """Leiterplatte: leuchtende Bahnen, Pads und ein Chip."""
+    img = np.zeros((h, w, 3), np.float32) + \
+        np.asarray((5, 9, 17), np.float32) / 255.0
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    cell = max(8, int(min(w, h) // 46))
+    dirs = ((1, 0), (0, 1), (-1, 0), (0, -1))
+    paths = []
+    for _ in range(26):
+        px = int(rng.integers(1, max(2, w // cell - 1)))
+        py = int(rng.integers(1, max(2, h // cell - 1)))
+        pts = [(px, py)]
+        d = int(rng.integers(0, 4))
+        for _ in range(int(rng.integers(6, 20))):
+            if rng.random() < 0.35:
+                d = (d + int(rng.integers(1, 3))) % 4
+            for _ in range(int(rng.integers(1, 4))):
+                nx = pts[-1][0] + dirs[d][0]
+                ny = pts[-1][1] + dirs[d][1]
+                if 1 <= nx < w // cell - 1 and 1 <= ny < h // cell - 1:
+                    pts.append((nx, ny))
+                else:
+                    break
+        if len(pts) >= 3:
+            paths.append([(p[0] * cell + cell // 2,
+                           p[1] * cell + cell // 2) for p in pts])
+
+    cyan_m = np.zeros((h, w), np.float32)
+    mag_m = np.zeros((h, w), np.float32)
+    for i, p in enumerate(paths):
+        m = line_mask(w, h, p, width=4.0)
+        if i % 3:
+            np.maximum(cyan_m, m, out=cyan_m)
+        else:
+            np.maximum(mag_m, m, out=mag_m)
+
+    pads = np.zeros((h, w), np.float32)
+    for p in paths:
+        for ex, ey in (p[0], p[-1]):
+            rr = 5.0 + 2.0 * float(rng.random())
+            x0, x1 = int(max(0, ex - rr * 3)), int(min(w, ex + rr * 3 + 1))
+            y0, y1 = int(max(0, ey - rr * 3)), int(min(h, ey + rr * 3 + 1))
+            if x1 <= x0 or y1 <= y0:
+                continue
+            yy, xx = np.mgrid[y0:y1, x0:x1]
+            dd = np.sqrt((xx - ex) ** 2 + (yy - ey) ** 2)
+            ring = np.exp(-((dd - rr) ** 2) / (2 * 1.6 ** 2))
+            np.maximum(pads[y0:y1, x0:x1], ring, out=pads[y0:y1, x0:x1])
+
+    # Chip mittig
+    cw, chh = int(w * 0.16), int(h * 0.20)
+    ccx, ccy = w // 2, int(h * 0.5)
+    x0, x1 = max(2, ccx - cw // 2), min(w - 2, ccx + cw // 2)
+    y0, y1 = max(2, ccy - chh // 2), min(h - 2, ccy + chh // 2)
+    chip = np.zeros((h, w), np.float32)
+    chip[y0:y1, x0:x1] = 1.0
+    img = img * (1 - chip[..., None] * 0.92) + \
+        np.asarray((11, 13, 26), np.float32)[None, None] / 255.0 * \
+        chip[..., None] * 0.92
+    border = np.zeros((h, w), np.float32)
+    border[y0:y0 + 2, x0:x1] = 1.0
+    border[y1 - 2:y1, x0:x1] = 1.0
+    border[y0:y1, x0:x0 + 2] = 1.0
+    border[y0:y1, x1 - 2:x1] = 1.0
+    for yy in range(y0 + 6, y1 - 6, 12):            # Pins
+        if x0 > 12:
+            border[yy:yy + 5, x0 - 9:x0] = 1.0
+        if x1 + 9 < w:
+            border[yy:yy + 5, x1:x1 + 9] = 1.0
+
+    img = screen(img, colorize(cyan_m * 0.9, PALETTE["cyan"]))
+    img = screen(img, colorize(mag_m * 0.9, PALETTE["magenta"]))
+    img = screen(img, colorize(pads * 0.9, PALETTE["yellow"]))
+    img = screen(img, colorize(border * 0.9, PALETTE["green"]))
+    img = screen(img, colorize(blur(cyan_m, 7, 2) * 0.35, PALETTE["cyan"]))
+    img = screen(img, colorize(blur(mag_m, 7, 2) * 0.35, PALETTE["magenta"]))
+    img = screen(img, colorize(blur(pads, 7, 2) * 0.40, PALETTE["yellow"]))
+    img = screen(img, colorize(blur(border, 6, 2) * 0.30, PALETTE["green"]))
+    grid_dots = ((np.sin(xs * 0.7) * np.sin(ys * 0.7)) > 0.985).astype(np.float32)
+    img = screen(img, colorize(grid_dots * 0.05, (70, 130, 170)))
+    return finish(img, w, h, seed, vig=0.5, lines=0.05)
+
+
+def m_rain(w, h, rng, seed):
+    """Neon-Regen mit weichen Bokeh-Kreisen im Hintergrund."""
+    img = sky(w, h, (4, 6, 18), (12, 7, 30))
+    bok = np.zeros((h, w), np.float32)
+    for _ in range(14):
+        dot(bok, rng.uniform(0, w), rng.uniform(0, h),
+            rng.uniform(h * 0.03, h * 0.08), amp=rng.uniform(0.25, 0.5))
+    img = screen(img, colorize(blur(bok, 3, 2) * 0.5, PALETTE["purple"]))
+
+    a = np.zeros((h, w), np.float32)
+    b = np.zeros((h, w), np.float32)
+    for _ in range(460):
+        tgt = a if rng.random() < 0.78 else b
+        x = rng.uniform(-0.1, 1.1) * w
+        y = rng.uniform(-0.25, 1.25) * h
+        ln = rng.uniform(0.035, 0.16) * h
+        ang = rng.uniform(-0.22, -0.06)
+        x1 = x + np.sin(ang) * ln
+        y1 = y + np.cos(ang) * ln
+        n = max(4, int(ln / 2))
+        t = np.linspace(0.0, 1.0, n)
+        xi = np.clip((x + (x1 - x) * t).astype(np.int32), 0, w - 1)
+        yi = np.clip((y + (y1 - y) * t).astype(np.int32), 0, h - 1)
+        np.add.at(tgt, (yi, xi), (0.25 + 0.75 * t) * rng.uniform(0.5, 1.0))
+
+    img = screen(img, colorize(np.clip(blur(np.clip(a, 0, 1), 1, 1) * 1.6,
+                                       0, 1) * 0.9, PALETTE["cyan"]))
+    img = screen(img, colorize(np.clip(blur(np.clip(b, 0, 1), 1, 1) * 1.6,
+                                       0, 1) * 0.9, PALETTE["magenta"]))
+    img = screen(img, colorize(blur(a, 6, 2) * 0.5, PALETTE["cyan"]))
+    img = screen(img, colorize(blur(b, 6, 2) * 0.5, PALETTE["magenta"]))
+    return finish(img, w, h, seed, vig=0.6, lines=0.05)
+
+
+def m_fireworks(w, h, rng, seed):
+    """Mehrere Feuerwerke über dunklem Nachthimmel."""
+    img = sky(w, h, (4, 4, 16), (16, 5, 36))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 3800), 0.9),
+                               PALETTE["white"]))
+    cols = [PALETTE["cyan"], PALETTE["magenta"], PALETTE["yellow"],
+            PALETTE["green"], PALETTE["orange"], PALETTE["purple"]]
+    for i in range(6):
+        cx = rng.uniform(0.10, 0.90) * w
+        cy = rng.uniform(0.12, 0.55) * h
+        rr = rng.uniform(0.11, 0.26) * min(w, h)
+        col = cols[i % len(cols)]
+        dx, dy = xs - cx, ys - cy
+        rad = np.sqrt(dx * dx + dy * dy) + 1e-3
+        ang = np.arctan2(dy, dx)
+        steps = 512
+        prof = rng.random(steps).astype(np.float32) ** 2.4
+        prof = np.convolve(np.r_[prof, prof, prof],
+                           np.ones(5) / 5, "same")[steps:2 * steps]
+        idx = ((ang + np.pi) / (2 * np.pi) * steps).astype(np.int32) % steps
+        streak = prof[idx] * np.exp(-rad / (rr * 0.5)) * (rad > 4)
+        core = np.exp(-(rad / (rr * 0.14)) ** 2)
+        layer = streak * 1.5 + core * 1.4
+        sparks = np.zeros((h, w), np.float32)
+        for _ in range(46):
+            aa = rng.uniform(-np.pi, np.pi)
+            LL = rr * rng.uniform(0.55, 1.35)
+            sx = cx + np.cos(aa) * LL
+            sy = cy + np.sin(aa) * LL
+            n = 10
+            tt = np.linspace(0.0, 1.0, n)
+            tx = sx + rng.uniform(-6, 6) * tt
+            ty = sy + rng.uniform(6, 34) * tt ** 1.4
+            xi = np.clip(tx.astype(np.int32), 0, w - 1)
+            yi = np.clip(ty.astype(np.int32), 0, h - 1)
+            np.add.at(sparks, (yi, xi), (1.0 - tt) * rng.uniform(0.5, 1.0))
+        layer = layer + blur(np.clip(sparks, 0, 1), 2, 2) * 1.3
+        layer = np.clip(layer, 0, 1.6)
+        img = screen(img, colorize(layer, col))
+        img = screen(img, colorize(blur(layer, max(w, h) // 60, 2) * 0.35, col))
+    return finish(img, w, h, seed, vig=0.6, lines=0.045)
+
+
+def m_galaxy(w, h, rng, seed):
+    """Spiralgalaxie in schräger Draufsicht."""
+    img = sky(w, h, (3, 3, 14), (10, 4, 30))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 2400), 1.0),
+                               PALETTE["white"]))
+    cx, cy = w * 0.5, h * 0.5
+    th = np.deg2rad(-20.0)
+    rx = (xs - cx) * np.cos(th) + (ys - cy) * np.sin(th)
+    ry = (-(xs - cx) * np.sin(th) + (ys - cy) * np.cos(th)) / 0.58
+    r = np.sqrt(rx * rx + ry * ry) / (0.58 * min(w, h)) + 1e-4
+    ang = np.arctan2(ry, rx)
+    arms = (0.5 + 0.5 * np.sin(2.0 * ang - 4.5 * np.log(r + 0.05))) ** 2.4
+    dust = 0.45 + 0.55 * fbm(w, h, 6, 5, rng)
+    fall = np.exp(-r * 1.75) * smoothstep(r, 0.02, 0.14)
+    disc = fall * (0.30 + 0.70 * arms) * dust
+    core = np.exp(-(r / 0.10) ** 2)
+    col = ramp(np.clip(r * 1.1, 0, 1),
+               [(255, 248, 230), (210, 240, 255), PALETTE["cyan"],
+                PALETTE["purple"], PALETTE["magenta"]])
+    img = screen(img, col * np.clip(disc * 1.9, 0, 1.6)[..., None])
+    img = screen(img, colorize(np.clip(core, 0, 1) * 1.3, (255, 250, 240)))
+    bright = np.clip(img.mean(-1) - 0.48, 0, 1) * 2.0
+    img = screen(img, colorize(blur(bright, max(w, h) // 60, 2) * 0.65,
+                               PALETTE["purple"]))
+    return finish(img, w, h, seed, vig=0.55, lines=0.045)
+
+
+def m_highway(w, h, rng, seed):
+    """Nächtliche Autobahn mit Lichtspuren aus der Langzeitbelichtung."""
+    hzn = int(h * 0.42)
+    img = sky(w, h, (5, 5, 22), (40, 7, 62))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    sky_mask = np.zeros((h, w), np.float32)
+    sky_mask[:max(1, hzn - 6)] = 1.0
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 3600), 1.0) *
+                               sky_mask, PALETTE["white"]))
+    clouds = fbm(w, h, 4, 4, rng)
+    cl = np.clip(clouds - 0.42, 0, 1) * 1.6 * sky_mask
+    img = screen(img, colorize(blur(cl, max(w, h) // 45, 2) * 0.5,
+                               PALETTE["purple"]))
+
+    sil = np.zeros((h, w), np.float32)
+    x = 0
+    while x < w:
+        bw = int(rng.integers(6, 26))
+        bh = int(rng.integers(4, max(5, int(h * 0.07))))
+        sil[max(0, hzn - bh):hzn, x:min(w, x + bw)] = 1.0
+        x += bw + 1
+    img = img * (1 - sil[..., None] * 0.92)
+    img = screen(img, colorize(blur(sil, 3, 2) * 0.12, PALETTE["purple"]))
+    glow = np.exp(-((ys - hzn) ** 2) / (2 * (h * 0.012) ** 2))
+    img = screen(img, colorize(glow * 0.5, PALETTE["magenta"]))
+
+    depth = np.maximum(ys - hzn, 1.0)
+    half = depth * 0.95 + 4.0
+    road = (np.abs(xs - w * 0.5) < half) & (ys >= hzn)
+    asphalt = (0.055 + 0.05 * np.clip(depth / (h - hzn), 0, 1))[..., None] * \
+        np.asarray((1.0, 1.0, 1.25), np.float32)
+    img = np.where(road[..., None], asphalt, img)
+
+    dash = (np.sin(depth * 0.22) > 0.1).astype(np.float32)
+    mid = (np.abs(xs - w * 0.5) < 3.0) & road
+    img = screen(img, colorize(mid * dash * 0.8, (255, 235, 170)))
+
+    lanes = [(-0.62, PALETTE["cyan"]), (-0.30, (235, 245, 255)),
+             (0.28, PALETTE["red"]), (0.56, PALETTE["magenta"])]
+    for frac, col in lanes:
+        phase = rng.uniform(0, 6.28)
+        wig = rng.uniform(0.010, 0.035)
+        pts = []
+        for k in range(70):
+            d = 1.0 + (h - hzn - 1.0) * (k / 69.0) ** 1.6
+            xoff = w * 0.5 + frac * (d * 0.95 + 4.0) + \
+                np.sin(d * 0.012 + phase) * d * wig
+            pts.append((float(xoff), float(hzn + d)))
+        m = line_mask(w, h, pts, width=4.0, core_boost=2.8)
+        img = screen(img, colorize(np.clip(m, 0, 1) * 0.95, col))
+        img = screen(img, colorize(blur(m, 9, 2) * 0.45, col))
+
+    vp = np.exp(-(((xs - w * 0.5) / (w * 0.07)) ** 2 +
+                  ((ys - hzn) / (h * 0.022)) ** 2))
+    img = screen(img, colorize(vp * 0.7, (255, 240, 205)))
+
+    lamps = np.zeros((h, w), np.float32)
+    for side in (-1.0, 1.0):
+        for k in range(28):
+            d = 3.0 + (h - hzn) * (k / 27.0) ** 1.7
+            lx = w * 0.5 + side * (d * 0.95 + 12.0)
+            ly = hzn + d
+            dot(lamps, lx, ly, 3.0, 1.0)
+    img = screen(img, colorize(np.clip(lamps, 0, 1) * 0.9, PALETTE["yellow"]))
+    img = screen(img, colorize(blur(lamps, 7, 2) * 0.5, PALETTE["orange"]))
+    return finish(img, w, h, seed, vig=0.6, lines=0.045)
+
+
+def m_shards(w, h, rng, seed):
+    """Glas-Scherben: Voronoi-Facetten mit Neon-Kanten."""
+    n = 26
+    px = rng.uniform(0.02 * w, 0.98 * w, n)
+    py = rng.uniform(0.02 * h, 0.98 * h, n)
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    d1 = np.full((h, w), 1e9, np.float32)
+    d2 = np.full((h, w), 1e9, np.float32)
+    owner = np.zeros((h, w), np.int32)
+    for i in range(n):
+        d = np.sqrt((xs - px[i]) ** 2 + (ys - py[i]) ** 2)
+        closer = d < d1
+        d2 = np.where(closer, d1, np.minimum(d2, d))
+        owner = np.where(closer, i, owner)
+        d1 = np.where(closer, d, d1)
+    edge = np.exp(-((d2 - d1) / 1.7) ** 2)
+
+    facet = ramp(rng.random(n).astype(np.float32),
+                 [(9, 11, 34), (34, 16, 66), (14, 40, 76), (54, 18, 82),
+                  (12, 46, 62), (26, 12, 48)])
+    shade = (0.55 + 0.70 * (ys / h) + 0.25 * (xs / w))[..., None]
+    img = facet[owner] * shade
+    ecol = ramp((owner / max(1, n - 1)).astype(np.float32),
+                [PALETTE["cyan"], PALETTE["magenta"], PALETTE["purple"],
+                 PALETTE["blue"]])
+    sheen = np.clip(np.sin((xs - ys) / (w * 0.18)) - 0.75, 0, 1) * 0.45
+    img = screen(img, colorize(sheen, (190, 225, 255)))
+    img = screen(img, edge[..., None] * ecol * 0.95)
+    img = screen(img, colorize(blur(edge, 9, 2) * 0.45, PALETTE["cyan"]))
+    return finish(img, w, h, seed, vig=0.55, lines=0.05)
+
+
+def m_eq(w, h, rng, seed):
+    """Audio-Visualizer: Balken, Peak-Hold und Wellenform."""
+    img = np.zeros((h, w, 3), np.float32) + \
+        np.asarray((6, 6, 20), np.float32) / 255.0
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+
+    # Hintergrund-Gitter + Radialglow hinter den Balken
+    vline = (np.abs(np.mod(xs, w / 40.0) - 0.5) < 0.06).astype(np.float32) * 0.05
+    hline = (np.abs(np.mod(ys, h / 20.0) - 0.5) < 0.06).astype(np.float32) * 0.05
+    img = screen(img, colorize(vline + hline, (40, 70, 120)))
+    rg = np.exp(-(((xs - w * 0.5) / (w * 0.55)) ** 2 +
+                  ((ys - h * 0.55) / (h * 0.55)) ** 2))
+    img = screen(img, colorize(rg * 0.22, PALETTE["purple"]))
+
+    nb = 64
+    spec = smooth_noise(w, 8, 26, 4, rng)[2]
+    xs_bars = np.linspace(0, w - 1, nb).astype(np.int32)
+    hs = spec[xs_bars] ** 1.7
+    env = 1.15 - 0.60 * (np.arange(nb) / (nb - 1))
+    hs = np.clip(hs * env, 0.05, 1.0) * 0.66 + 0.05
+
+    base_y = int(h * 0.84)
+    bw = w / nb
+    gap = bw * 0.30
+    bars = np.zeros((h, w), np.float32)
+    caps = np.zeros((h, w), np.float32)
+    for i in range(nb):
+        x0 = int(i * bw + gap / 2)
+        x1 = int((i + 1) * bw - gap / 2)
+        hgt = int(hs[i] * (base_y - int(h * 0.08)))
+        if hgt < 3 or x1 <= x0:
+            continue
+        y0 = max(0, base_y - hgt)
+        bars[y0:base_y, x0:x1] = 1.0
+        caps[max(0, y0 - 5):max(1, y0 - 1), x0:x1] = 1.0
+
+    colbar = ramp(np.linspace(0, 1, max(2, base_y))[:, None],
+                  [PALETTE["magenta"], (255, 120, 60), PALETTE["yellow"],
+                   PALETTE["cyan"], (150, 255, 255)])
+    colbar = colbar[:base_y]
+    barlayer = np.zeros((h, w, 3), np.float32)
+    barlayer[:base_y] = bars[:base_y, :, None] * colbar * 1.1
+    img = screen(img, barlayer)
+    img = screen(img, colorize(caps * 0.95, (255, 255, 255)))
+
+    # Reflexion unter den Balken
+    refl = bars[base_y - 140:base_y][::-1]
+    rh = min(refl.shape[0], h - base_y)
+    if rh > 0:
+        fade = np.clip(1.0 - np.arange(rh) / (rh * 1.1), 0, 1)[:, None, None]
+        rcol = ramp(np.linspace(0, 1, max(2, refl.shape[0]))[:, None],
+                    [PALETTE["magenta"], PALETTE["purple"], PALETTE["cyan"]])
+        rlayer = np.zeros((h, w, 3), np.float32)
+        rlayer[base_y:base_y + rh] = refl[:rh, :, None] * \
+            rcol[:rh] * fade * 0.45
+        img = screen(img, blur(rlayer, 3, 2))
+
+    # Wellenform über den Balken
+    wave_y = h * 0.30 + h * 0.10 * np.sin(xs / w * 14.0 + seed * 0.3) * \
+        (0.4 + 0.6 * smooth_noise(w, 4, 9, 3, rng)[1])
+    line = np.exp(-((ys - wave_y) ** 2) / (2 * 2.2 ** 2))
+    img = screen(img, colorize(line * 0.9, (235, 250, 255)))
+    img = screen(img, colorize(blur(line, 7, 2) * 0.4, PALETTE["cyan"]))
+    return finish(img, w, h, seed, vig=0.55, lines=0.05)
+
+
+def m_lightning(w, h, rng, seed):
+    """Gewitterblitze über dunklem, bewölktem Himmel."""
+    img = sky(w, h, (5, 5, 20), (16, 6, 34))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    clouds = fbm(w, h, 4, 5, rng)
+    shade = (0.55 + 0.45 * smoothstep(ys, 0, h * 0.75)) * (0.55 + 0.65 * clouds)
+    img = img * shade[..., None]
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 8000), 0.5) *
+                               np.clip(1.0 - clouds, 0, 1), PALETTE["white"]))
+
+    def make_bolt(x0, y0, x1, y1, segs, spread):
+        pts = [(float(x0), float(y0))]
+        for s in range(1, segs + 1):
+            t = s / segs
+            xx = x0 + (x1 - x0) * t + rng.normal(0, spread) * (1.0 - abs(0.5 - t))
+            yy = y0 + (y1 - y0) * t
+            pts.append((float(xx), float(yy)))
+        return pts
+
+    bolts = []
+    for k in range(2):
+        bolts.append(make_bolt(w * rng.uniform(0.28, 0.72), -12.0,
+                               w * rng.uniform(0.2, 0.8),
+                               h * rng.uniform(0.70, 0.92),
+                               13, w * (0.070 - 0.018 * k)))
+    core_m = np.clip(line_mask(w, h, bolts[0], width=9.0, core_boost=3.6), 0, 1)
+    core2 = np.clip(line_mask(w, h, bolts[1], width=6.0, core_boost=2.8), 0, 1)
+    branch_m = np.zeros((h, w), np.float32)
+    for k, bpts_main in enumerate(bolts):
+        for _ in range(7 if k == 0 else 4):
+            i0 = int(rng.integers(3, len(bpts_main) - 3))
+            bx, by = bpts_main[i0]
+            ex = bx + rng.normal(0, w * 0.15)
+            ey = by + h * rng.uniform(0.10, 0.30)
+            bpts = make_bolt(bx, by, ex, ey, 6, w * 0.030)
+            np.maximum(branch_m, np.clip(line_mask(w, h, bpts, width=3.5,
+                                                   core_boost=2.2), 0, 1),
+                       out=branch_m)
+
+    img = screen(img, colorize(core_m * 1.0, (245, 252, 255)))
+    img = screen(img, colorize(core2 * 0.8, (225, 245, 255)))
+    img = screen(img, colorize(branch_m * 0.9, PALETTE["cyan"]))
+    flash = blur(core_m + core2 * 0.7 + branch_m * 0.8,
+                 max(w, h) // 10, 2)
+    img = screen(img, colorize(flash * 1.15, PALETTE["purple"]))
+    img = screen(img, colorize(blur(flash, max(w, h) // 5, 2) * 0.60,
+                               PALETTE["cyan"]))
+
+    ground = np.zeros((h, w), np.float32)
+    x = 0
+    while x < w:
+        bw = int(rng.integers(10, 46))
+        bh = int(rng.integers(6, max(7, int(h * 0.14))))
+        ground[max(0, int(h * 0.90) - bh):h, x:min(w, x + bw)] = 1.0
+        x += bw + 2
+    img = img * (1 - ground[..., None] * 0.97)
+    img = screen(img, colorize(blur(ground, 5, 2) * 0.10, PALETTE["magenta"]))
+    return finish(img, w, h, seed, vig=0.6, lines=0.05)
+
+
+def m_orbit(w, h, rng, seed):
+    """Planet mit Ringen, Mond und Sternenfeld."""
+    img = sky(w, h, (3, 4, 16), (12, 5, 34))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    neb = fbm(w, h, 3, 4, rng)
+    img = screen(img, colorize(np.clip(neb - 0.5, 0, 1) * 0.8,
+                               PALETTE["purple"]))
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 2800), 1.0),
+                               PALETTE["white"]))
+
+    cx, cy, R = w * 0.52, h * 0.5, h * 0.25
+    dx, dy = xs - cx, ys - cy
+    dp = np.sqrt(dx * dx + dy * dy)
+
+    # Ring (hinten)
+    e = np.sqrt((dx / (R * 1.95)) ** 2 + (dy / (R * 0.52)) ** 2)
+    band = smoothstep(e, 1.0, 1.06) * (1.0 - smoothstep(e, 1.45, 1.55))
+    band = band * (0.55 + 0.45 * np.sin(e * 46.0) ** 2)
+    ring_col = ramp(np.clip((e - 1.0) / 0.55, 0, 1),
+                    [(210, 235, 255), PALETTE["cyan"], PALETTE["purple"],
+                     PALETTE["magenta"]])
+    back = (ys < cy)
+    img = screen(img, (band * back)[..., None] * ring_col * 1.1)
+
+    # Planet
+    inside = dp < R
+    nx = np.clip(dx / R, -1, 1)
+    ny = np.clip(dy / R, -1, 1)
+    nz = np.sqrt(np.clip(1 - nx * nx - ny * ny, 0, 1))
+    lam = np.clip(nx * -0.55 + ny * -0.55 + nz * 0.63, 0, 1)
+    bands = np.sin((ny * 3.6 + fbm(w, h, 5, 4, rng) * 4.0) * np.pi)
+    surf = ramp(0.5 + 0.5 * bands,
+                [(16, 20, 60), PALETTE["blue"], PALETTE["purple"],
+                 (120, 200, 255), PALETTE["magenta"]])
+    body = surf * (0.10 + 1.05 * lam[..., None]) * inside[..., None]
+    img = np.where(inside[..., None], body, img)
+    rim = np.exp(-((dp - R) ** 2) / (2 * (R * 0.045) ** 2)) * (1 - lam * 0.6)
+    img = screen(img, colorize(rim * 0.85, PALETTE["cyan"]))
+
+    # Ring (vorne) über dem Planeten
+    front = (ys >= cy)
+    img = screen(img, (band * front)[..., None] * ring_col * 1.1)
+
+    # Mond
+    mx, my, mr = w * 0.24, h * 0.26, h * 0.055
+    mdx, mdy = xs - mx, ys - my
+    md = np.sqrt(mdx * mdx + mdy * mdy)
+    m_in = md < mr
+    mnx = np.clip(mdx / mr, -1, 1)
+    mny = np.clip(mdy / mr, -1, 1)
+    mnz = np.sqrt(np.clip(1 - mnx * mnx - mny * mny, 0, 1))
+    mlam = np.clip(mnx * -0.5 + mny * -0.6 + mnz * 0.6, 0, 1)
+    moon = ramp(mlam, [(20, 22, 48), (110, 130, 190), (235, 240, 255)])
+    img = np.where(m_in[..., None], moon * 0.9, img)
+    return finish(img, w, h, seed, vig=0.55, lines=0.045)
+
+
 BUILDERS = {"grid": m_grid, "nebula": m_nebula, "burst": m_burst,
-            "tunnel": m_tunnel}
+            "tunnel": m_tunnel, "city": m_city, "ridges": m_ridges,
+            "aurora": m_aurora, "eclipse": m_eclipse, "plasma": m_plasma,
+            "topo": m_topo, "circuit": m_circuit, "rain": m_rain,
+            "fireworks": m_fireworks, "galaxy": m_galaxy,
+            "highway": m_highway, "shards": m_shards, "eq": m_eq,
+            "lightning": m_lightning, "orbit": m_orbit}
 
 
 # -------------------------------------------------------------- API -----
