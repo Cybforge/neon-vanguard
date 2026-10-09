@@ -68,8 +68,8 @@ neon_art.py  prozeduraler Art-/Wallpaper-Generator (PNG, ohne Display)
 `neon_art.py` erzeugt Wallpaper und Key-Art im Look des Spiels – wie die
 Sounds und die Spielgrafik selbst komplett aus Zahlen berechnet, ohne eine
 einzige Bilddatei als Vorlage. Läuft ohne Display (nur `numpy`) und schreibt
-PNGs. **39 Motive** (19 Neon- + 10 Pixel- + 5 Frutiger-Aero- + 5
-Plasma-Motive), alle per Seed reproduzierbar.
+PNGs. **42 Motive** (19 Neon- + 10 Pixel- + 5 Frutiger-Aero- + 5
+Plasma- + 3 KDE-Plasma-Motive), alle per Seed reproduzierbar.
 
 ```bash
 python neon_art.py --list
@@ -193,6 +193,21 @@ kletternden Entladungen bis zum Spiralwirbel mit glühendem Auge.
 Alle 10 Aero-/Plasma-Motive auf einen Blick:
 
 ![Übersicht der Aero- und Plasma-Motive](art/_ap_sheet.png)
+
+### Die 3 KDE-Plasma-Motive
+
+Der Look der KDE-Plasma-Desktop-Umgebung: **Breeze**-Flat-Design mit
+weichen Schlagschatten, Fenster mit Fensterknöpfen rechts, unterem Panel
+und Akzentflächen in KDE-Blau (#3daee9) – dazu dunkle Navy-Wallpaper mit
+fließenden Lichtkurven und ein Zahnkranz-Emblem:
+
+| `kde_flow` – Navy-Wallpaper mit Lichtkurven | `kde_breeze` – Breeze-Desktop mit Fenster |
+|---|---|
+| ![kde_flow](art/kde_flow.png) | ![kde_breeze](art/kde_breeze.png) |
+
+| `kde_emblem` – Zahnkranz-Emblem |
+|---|
+| ![kde_emblem](art/kde_emblem.png) |
 
 ## Dateien
 

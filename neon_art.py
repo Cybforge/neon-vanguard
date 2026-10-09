@@ -52,6 +52,8 @@ MOTIFS = ("grid", "nebula", "burst", "tunnel", "city", "ridges", "aurora",
           # Plasmastil (dunkel, heiße Adern und Entladungen)
           "plasma_ball", "plasma_filament", "plasma_ribbons", "plasma_core",
           "plasma_swirl",
+          # KDE-Plasma-Stil (Breeze-Flat-Design, KDE-Blau)
+          "kde_flow", "kde_breeze", "kde_emblem",
           # Retro-Pixel-Stil (Low-Res, Paletten, Bayer-Dithering)
           "px_space", "px_invader", "px_sunset", "px_maze", "px_snake",
           "px_platform", "px_boss", "px_racer", "px_gbland", "px_moon")
@@ -1714,6 +1716,235 @@ def pa_swirl(w, h, rng, seed):
     return finish(img, w, h, seed, vig=0.5, lines=0.05)
 
 
+# --------------------------------------------- KDE-Plasma-Stil --------
+# Look der KDE-Plasma-Desktop-Umgebung: Breeze-Flat-Design, KDE-Blau
+# (#3daee9), dunkle Navy-Wallpaper mit fließenden Lichtkurven, klare
+# Fenster-Kanten mit weichen Schlagschatten.
+
+
+def flat_rect(img, x, y, ww, hh, rad, col, alpha=1.0, shadow=0.0):
+    """Flaches Rechteck im Breeze-Look: weiche Ecken, Schlagschatten optional."""
+    ih, iw, _ = img.shape
+    x0, y0 = int(max(0, x)), int(max(0, y))
+    x1, y1 = int(min(iw, x + ww)), int(min(ih, y + hh))
+    if x1 - x0 < 3 or y1 - y0 < 3:
+        return img
+    ph, pw = y1 - y0, x1 - x0
+    if shadow > 0.0:
+        sy0, sy1 = y1, min(ih, y1 + int(6 + ph * 0.10))
+        if sy1 > sy0:
+            g = np.linspace(shadow, 0.0, sy1 - sy0, dtype=np.float32)[:, None, None]
+            img[sy0:sy1, max(0, x0 + 8):min(iw, x1 + 8)] *= (1.0 - 0.55 * g)
+        sx0, sx1 = x1, min(iw, x1 + int(5 + pw * 0.04))
+        if sx1 > sx0:
+            g = np.linspace(shadow * 0.7, 0.0, sx1 - sx0, dtype=np.float32)[None, :, None]
+            img[max(0, y0 + 8):y1, sx0:sx1] *= (1.0 - 0.50 * g)
+    m = rounded_mask(pw, ph, float(rad))
+    if rad <= 1.0 or min(pw, ph) < 5:      # winzige Elemente: scharfe Kante
+        m = np.ones((ph, pw), np.float32)
+    crop = img[y0:y1, x0:x1]
+    c = np.asarray(col, np.float32) / 255.0
+    fill = c[None, None, :] * alpha + crop * (1.0 - alpha)
+    img[y0:y1, x0:x1] = crop * (1.0 - m[..., None]) + fill * m[..., None]
+    return img
+
+
+def flat_circle(img, cx, cy, r, col, alpha=1.0):
+    """Kreisflaeche mit Antialias-Kante (Breeze-Buttons, Akzentpunkte)."""
+    ih, iw, _ = img.shape
+    x0, x1 = int(max(0, cx - r - 1)), int(min(iw, cx + r + 2))
+    y0, y1 = int(max(0, cy - r - 1)), int(min(ih, cy + r + 2))
+    if x1 <= x0 or y1 <= y0:
+        return img
+    yy, xx = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    d = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    a = np.clip(r + 0.5 - d, 0, 1) * alpha
+    c = np.asarray(col, np.float32) / 255.0
+    crop = img[y0:y1, x0:x1]
+    img[y0:y1, x0:x1] = crop * (1.0 - a[..., None]) + c[None, None, :] * a[..., None]
+    return img
+
+
+def soft_disc(img, cx, cy, r, col, amp=0.3):
+    """Weich eingeblendeter Farbfleck per Alpha - wirkt auch auf hellen Graenden."""
+    ih, iw, _ = img.shape
+    x0, x1 = int(max(0, cx - r - 2)), int(min(iw, cx + r + 3))
+    y0, y1 = int(max(0, cy - r - 2)), int(min(ih, cy + r + 3))
+    if x1 <= x0 or y1 <= y0:
+        return img
+    yy, xx = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    d = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    m = np.clip(1.0 - d / (r + 1e-3), 0, 1) ** 1.4 * amp
+    c = np.asarray(col, np.float32) / 255.0
+    crop = img[y0:y1, x0:x1]
+    img[y0:y1, x0:x1] = crop * (1.0 - m[..., None]) + c[None, None, :] * m[..., None]
+    return img
+
+
+def kde_flow(w, h, rng, seed):
+    """KDE-Plasma-Stil: dunkles Wallpaper mit fließenden blauen Lichtkurven."""
+    img = sky(w, h, (8, 18, 38), (16, 48, 92))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    x = xs / w
+    dgn = np.clip(xs / w * 0.55 + ys / h * 0.45, 0, 1)
+    img = img * (0.78 + 0.46 * dgn[..., None])         # diagonaler Lichtverlauf
+    sp = max(16, w // 44)                              # feines Punktraster
+    step = max(1.0, sp * 0.05)
+    gm = (np.mod(xs, sp) < step) & (np.mod(ys, sp) < step)
+    img = screen(img, gm[..., None] * np.asarray((1.0, 1.0, 1.0), np.float32) * 0.10)
+    acx, acy = w * 0.74, h * 1.18                      # großer Radialbogen
+    rr = np.sqrt((xs - acx) ** 2 + (ys - acy) ** 2)
+    img = screen(img, colorize(np.exp(-((rr - h * 1.02) / (h * 0.004)) ** 2) * 0.30,
+                               (61, 174, 233)))
+    img = screen(img, colorize(np.exp(-((rr - h * 0.86) / (h * 0.002)) ** 2) * 0.18,
+                               (103, 196, 240)))
+    warp = fbm(w, h, 3, 3, rng)                        # fließende Kurven
+    cols = [(103, 196, 240), (61, 174, 233), (41, 128, 185), (120, 226, 250),
+            (64, 140, 220), (86, 208, 235), (35, 110, 170)]
+    glow_m = np.zeros((h, w), np.float32)
+    for i in range(7):
+        base = h * (0.08 + 0.14 * i)
+        amp = h * rng.uniform(0.05, 0.13)
+        yc = base + amp * np.sin(2 * np.pi * rng.uniform(0.6, 1.3) * x +
+                                 rng.uniform(0, 6.3) + warp * (1.0 + 0.55 * i))
+        th = h * rng.uniform(0.010, 0.024)
+        dd = ys - yc
+        band = np.exp(-(dd / th) ** 2)
+        core = np.exp(-(dd / (th * 0.30)) ** 2)
+        col = np.asarray(cols[i % len(cols)], np.float32) / 255.0
+        img = screen(img, band[..., None] * col[None, None, :] * 0.72)
+        img = screen(img, core[..., None] * np.asarray((1.0, 1.0, 1.0),
+                                                       np.float32) * 0.50)
+        glow_m += band
+    img = screen(img, blur(np.clip(glow_m, 0, 1), max(w, h) // 44, 2)[..., None] *
+                 np.asarray((0.35, 0.65, 1.0), np.float32) * 0.50)
+    return finish(img, w, h, seed, vig=0.45, lines=0.0)
+
+
+def kde_breeze(w, h, rng, seed):
+    """KDE Breeze: helle Flat-Oberfläche mit Fenster, Akzentflächen und Panel."""
+    img = sky(w, h, (202, 228, 250), (150, 182, 210))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    for k in range(4):                                 # weiche Diagonalstreifen
+        x0 = rng.uniform(-0.2, 1.1) * w
+        slope = rng.uniform(0.5, 1.2)
+        if k % 2:
+            slope = -slope
+        d = np.abs(ys - slope * (xs - x0)) / np.sqrt(1.0 + slope * slope)
+        img = screen(img, colorize(np.exp(-(d / (w * 0.06)) ** 2) * 0.14,
+                                   (255, 255, 255)))
+    soft_disc(img, w * 0.90, h * 0.06, h * 0.70, (61, 174, 233), amp=0.95)
+    soft_disc(img, w * 0.02, h * 1.00, h * 0.50, (27, 188, 155), amp=0.70)
+    soft_disc(img, w * 1.02, h * 0.62, h * 0.34, (93, 174, 230), amp=0.55)
+
+    wx, wy = w * 0.13, h * 0.19                       # zweites Fenster dahinter
+    ww_, wh_ = w * 0.60, h * 0.54
+    flat_rect(img, wx + ww_ * 0.82, wy + wh_ * 0.24, w * 0.30, wh_ * 0.76,
+              min(22.0, wh_ * 0.09), (247, 250, 253), 0.95, shadow=0.26)
+    flat_rect(img, wx, wy, ww_, wh_, min(26.0, wh_ * 0.10), (255, 255, 255),
+              0.97, shadow=0.32)
+    tb = int(wh_ * 0.16)                               # Titelleiste
+    flat_rect(img, wx + 2, wy + 2, ww_ - 4, tb, min(24.0, wh_ * 0.09),
+              (231, 235, 240), 1.0)
+    sep = np.asarray((211, 218, 224), np.float32) / 255.0
+    img[int(wy + 2 + tb):int(wy + 4 + tb),
+        int(wx + 6):int(wx + ww_ - 6)] = sep
+    by = wy + 2 + tb * 0.5                             # Fensterknöpfe rechts
+    br = max(3.0, tb * 0.30)
+    flat_circle(img, wx + ww_ - tb * 0.60, by, br, (206, 214, 221))
+    flat_rect(img, wx + ww_ - tb * 0.60 - br * 0.45, by - br * 0.10,
+              br * 0.90, br * 0.22, 1, (92, 104, 114))            # minimieren
+    flat_circle(img, wx + ww_ - tb * 1.35, by, br, (206, 214, 221))
+    flat_rect(img, wx + ww_ - tb * 1.35 - br * 0.32, by - br * 0.32,
+              br * 0.64, br * 0.64, 2, (92, 104, 114))            # maximieren
+    flat_rect(img, wx + ww_ - tb * 1.35 - br * 0.16, by - br * 0.16,
+              br * 0.32, br * 0.32, 1, (206, 214, 221))
+    cxk = wx + ww_ - tb * 2.10
+    flat_circle(img, cxk, by, br, (218, 68, 83))                  # schließen
+    for s in np.linspace(-1.0, 1.0, 9):
+        flat_circle(img, cxk + s * br * 0.40, by + s * br * 0.40,
+                    max(1.0, br * 0.14), (255, 255, 255))
+        flat_circle(img, cxk + s * br * 0.40, by - s * br * 0.40,
+                    max(1.0, br * 0.14), (255, 255, 255))
+
+    cy0 = wy + 2 + tb + wh_ * 0.08                     # Inhalt
+    flat_rect(img, wx + ww_ * 0.05, cy0, ww_ * 0.37, wh_ * 0.58, 12,
+              (220, 236, 250), 1.0)
+    flat_circle(img, wx + ww_ * 0.13, cy0 + wh_ * 0.17, wh_ * 0.07, (61, 174, 233))
+    flat_rect(img, wx + ww_ * 0.21, cy0 + wh_ * 0.42, ww_ * 0.15, wh_ * 0.05,
+              6, (120, 190, 235))
+    flat_rect(img, wx + ww_ * 0.21, cy0 + wh_ * 0.52, ww_ * 0.11, wh_ * 0.05,
+              6, (160, 205, 238))
+    for i, (wf, col) in enumerate(((0.44, (206, 214, 221)),
+                                   (0.48, (188, 198, 207)),
+                                   (0.30, (61, 174, 233)),
+                                   (0.42, (206, 214, 221)),
+                                   (0.36, (188, 198, 207)))):
+        flat_rect(img, wx + ww_ * 0.47, cy0 + i * wh_ * 0.115,
+                  ww_ * wf, wh_ * 0.05, 6, col, 1.0)
+
+    ph_ = h * 0.078                                    # unteres Panel (Taskleiste)
+    py0 = h - ph_ * 1.45
+    flat_rect(img, 0, py0, w, ph_, 0.0, (28, 34, 44), 0.93, shadow=0.25)
+    pcols = [(61, 174, 233), (27, 188, 155), (218, 68, 83), (246, 181, 41),
+             (130, 140, 150), (61, 174, 233), (130, 140, 150)]
+    for i, c in enumerate(pcols):
+        ix = w * 0.035 + i * (w * 0.052)
+        flat_rect(img, ix, py0 + ph_ * 0.22, ph_ * 0.46, ph_ * 0.46,
+                  ph_ * 0.15, c, 0.95)
+    flat_rect(img, w * 0.035, py0 + ph_ * 0.84, ph_ * 0.46, ph_ * 0.10,
+              2, (61, 174, 233), 0.95)                # aktiver Indikator
+    flat_circle(img, w * 0.965, py0 + ph_ * 0.5, ph_ * 0.15, (230, 236, 240), 0.9)
+    return finish(img, w, h, seed, vig=0.13, lines=0.0)
+
+
+def kde_emblem(w, h, rng, seed):
+    """KDE-Plasma-Emblem: Zahnkranz- und Bogen-Signet auf dunklem Grund."""
+    img = sky(w, h, (5, 12, 26), (12, 40, 76))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    cx, cy = w * 0.5, h * 0.5
+    dx, dy = xs - cx, ys - cy
+    r = np.sqrt(dx * dx + dy * dy)
+    ang = np.arctan2(dy, dx)
+    img = screen(img, colorize(np.exp(-(r / (min(w, h) * 0.80)) ** 2) * 0.45,
+                               (16, 62, 116)))         # radiale Grundglut
+    sp = max(16, w // 44)                              # Punktraster
+    step = max(1.0, sp * 0.05)
+    gm = ((np.mod(xs, sp) < step) & (np.mod(ys, sp) < step) &
+          (r > min(w, h) * 0.42))
+    img = screen(img, gm[..., None] * np.asarray((1.0, 1.0, 1.0), np.float32) * 0.12)
+    R = min(w, h) * 0.28
+    disc = np.clip((R * 1.26 - r) / (R * 0.08), 0, 1)  # Signet-Flaeche minimal setzen
+    img = img * (1.0 - 0.06 * disc[..., None])
+    band = np.exp(-((r - R) / (R * 0.075)) ** 2)       # Zahnkranz-Ring
+    teeth = ((0.5 + 0.5 * np.cos(ang * 12.0)) ** 4 *
+             np.exp(-((r - R * 1.12) / (R * 0.075)) ** 2))
+    gear = np.clip(band * 0.95 + teeth * 0.85, 0, 1.4)
+    img = screen(img, colorize(gear, (61, 174, 233)))
+    img = screen(img, colorize(np.exp(-((r - R) / (R * 0.022)) ** 2) * 0.75,
+                               (235, 248, 255)))       # weisser Kern im Ring
+    img = screen(img, colorize(np.exp(-((r - R * 0.66) / (R * 0.028)) ** 2) * 0.95,
+                               (232, 245, 255)))       # Innenring
+    for rad_f, ph, col in ((0.50, 0.7, (103, 196, 240)),      # Wirbel-Bänder
+                           (0.34, 0.7 + np.pi, (61, 174, 233))):
+        wide = 0.5 + 0.5 * np.cos(ang - ph)          # Dicke variiert -> Wirbel
+        th_a = R * (0.028 + 0.080 * wide)
+        b = np.exp(-((r - R * rad_f) / th_a) ** 2) * (0.55 + 0.45 * wide)
+        img = screen(img, colorize(b * 0.95, col))
+        kc = np.exp(-((r - R * rad_f) / (th_a * 0.30)) ** 2) * (0.35 + 0.65 * wide)
+        img = screen(img, colorize(kc * 0.70, (235, 250, 255)))
+    img = screen(img, colorize(np.exp(-(r / (R * 0.13)) ** 2) * 1.05,  # Kern
+                               (255, 255, 255)))
+    img = screen(img, colorize(np.exp(-(r / (R * 0.26)) ** 2) * 0.65,
+                               (61, 174, 233)))
+    glow = blur(np.clip(band + teeth, 0, 1), max(w, h) // 55, 2)
+    img = screen(img, colorize(glow * 0.40, (47, 140, 210)))
+    for rr_, a_ in ((R * 1.62, 0.40), (R * 2.05, 0.26)):   # Außengitter-Bögen
+        a = np.exp(-((r - rr_) / (R * 0.010)) ** 2)
+        img = screen(img, colorize(a * a_, (61, 174, 233)))
+    return finish(img, w, h, seed, vig=0.5, lines=0.0)
+
+
 # ---------------------------------------------------- Pixel-Stil ------
 # Eigene Pipeline: Low-Res-Canvas zeichnen -> auf Retro-Paletten
 # quantisieren (Bayer-Dithering) -> nearest-neighbor hochskalieren.
@@ -2287,6 +2518,8 @@ BUILDERS = {"grid": m_grid, "nebula": m_nebula, "burst": m_burst,
             "plasma_ball": pa_ball, "plasma_filament": pa_filament,
             "plasma_ribbons": pa_ribbons, "plasma_core": pa_core,
             "plasma_swirl": pa_swirl,
+            "kde_flow": kde_flow, "kde_breeze": kde_breeze,
+            "kde_emblem": kde_emblem,
             "px_space": px_space, "px_invader": px_invader,
             "px_sunset": px_sunset, "px_maze": px_maze, "px_snake": px_snake,
             "px_platform": px_platform, "px_boss": px_boss,
