@@ -68,7 +68,8 @@ neon_art.py  prozeduraler Art-/Wallpaper-Generator (PNG, ohne Display)
 `neon_art.py` erzeugt Wallpaper und Key-Art im Look des Spiels – wie die
 Sounds und die Spielgrafik selbst komplett aus Zahlen berechnet, ohne eine
 einzige Bilddatei als Vorlage. Läuft ohne Display (nur `numpy`) und schreibt
-PNGs. **29 Motive** (19 Neon- + 10 Pixel-Motive), alle per Seed reproduzierbar.
+PNGs. **39 Motive** (19 Neon- + 10 Pixel- + 5 Frutiger-Aero- + 5
+Plasma-Motive), alle per Seed reproduzierbar.
 
 ```bash
 python neon_art.py --list
@@ -155,6 +156,43 @@ Alle 19 Neon-Motive auf einen Blick (jeweils Seed 42, 640×360):
 Alle 10 Pixel-Motive auf einen Blick:
 
 ![Übersicht der Pixel-Motive](art/_px_sheet.png)
+
+### Die 5 Frutiger-Aero- und 5 Plasma-Motive
+
+Zwei weitere Stilfamilien. **Frutiger Aero** (2006–2009): hell, hochglänzend,
+grün-blau – Wassertropfen mit echter Lichtbrechung, Irisierendes an
+Seifenblasen, Glas-Panels mit unscharfem Hintergrund, glänzende 3D-Kugeln
+mit Fresnel-Rim und Lens-Flare mit Blenden-Geistern. **Plasma**: dunkler
+Grund, heiße Ader- und Entladungsmuster – von der Glaskugel mit 22
+kletternden Entladungen bis zum Spiralwirbel mit glühendem Auge.
+
+| `aero_sky` – Blauer Himmel mit Wolkentürmen | `aero_hills` – Grüne Hügel mit See |
+|---|---|
+| ![aero_sky](art/aero_sky.png) | ![aero_hills](art/aero_hills.png) |
+
+| `aero_drops` – Wassertropfen im Makro | `aero_glass` – Glas-Panels & Blasen |
+|---|---|
+| ![aero_drops](art/aero_drops.png) | ![aero_glass](art/aero_glass.png) |
+
+| `aero_orbs` – Glänzende Kugeln mit Reflexion |
+|---|
+| ![aero_orbs](art/aero_orbs.png) |
+
+| `plasma_ball` – Plasmakugel mit Entladungen | `plasma_filament` – Energie-Adern |
+|---|---|
+| ![plasma_ball](art/plasma_ball.png) | ![plasma_filament](art/plasma_filament.png) |
+
+| `plasma_ribbons` – Fließende Energie-Bänder | `plasma_core` – Pulsierender Energiekern |
+|---|---|
+| ![plasma_ribbons](art/plasma_ribbons.png) | ![plasma_core](art/plasma_core.png) |
+
+| `plasma_swirl` – Spiralwirbel |
+|---|
+| ![plasma_swirl](art/plasma_swirl.png) |
+
+Alle 10 Aero-/Plasma-Motive auf einen Blick:
+
+![Übersicht der Aero- und Plasma-Motive](art/_ap_sheet.png)
 
 ## Dateien
 

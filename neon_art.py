@@ -47,6 +47,11 @@ except Exception:                                    # standalone nutzbar
 MOTIFS = ("grid", "nebula", "burst", "tunnel", "city", "ridges", "aurora",
           "eclipse", "plasma", "topo", "circuit", "rain", "fireworks",
           "galaxy", "highway", "shards", "eq", "lightning", "orbit",
+          # Frutiger-Aero-Stil (hell, glänzend, Glas, Wasser)
+          "aero_sky", "aero_hills", "aero_drops", "aero_glass", "aero_orbs",
+          # Plasmastil (dunkel, heiße Adern und Entladungen)
+          "plasma_ball", "plasma_filament", "plasma_ribbons", "plasma_core",
+          "plasma_swirl",
           # Retro-Pixel-Stil (Low-Res, Paletten, Bayer-Dithering)
           "px_space", "px_invader", "px_sunset", "px_maze", "px_snake",
           "px_platform", "px_boss", "px_racer", "px_gbland", "px_moon")
@@ -1177,6 +1182,538 @@ def m_orbit(w, h, rng, seed):
     return finish(img, w, h, seed, vig=0.55, lines=0.045)
 
 
+# ------------------------------------------------- Aero & Plasma ------
+# Zwei zusätzliche Stilfamilien:
+#  * Frutiger Aero  - hell, glänzend, grün-blau, Glas, Wassertropfen
+#  * Plasma         - dunkler Grund, heiße Ader- und Entladungsmuster
+def blur_rgb(img, radius, passes=2):
+    """Räumlicher Blur über RGB (Kanäle bleiben getrennt)."""
+    return np.stack([blur(img[..., c], radius, passes)
+                     for c in range(img.shape[-1])], axis=-1)
+
+
+def rounded_mask(ww, hh, rad):
+    """Weiche Alpha-Maske für ein abgerundetes Rechteck."""
+    ys, xs = np.mgrid[0:hh, 0:ww].astype(np.float32)
+    dx = np.maximum(np.maximum(rad - 1.0 - xs, xs - (ww - 2.0 - rad)), 0.0)
+    dy = np.maximum(np.maximum(rad - 1.0 - ys, ys - (hh - 2.0 - rad)), 0.0)
+    d = np.sqrt(dx * dx + dy * dy)
+    return np.clip(rad - d, 0.0, 1.0)
+
+
+def glow_disc(img, x, y, r, col, amp=0.2, ring=0.0):
+    """Weicher halbtransparenter Kreis (Bokeh/Lichtfleck) direkt ins Bild."""
+    h, w, _ = img.shape
+    x0, x1 = int(max(0, x - r - 2)), int(min(w, x + r + 3))
+    y0, y1 = int(max(0, y - r - 2)), int(min(h, y + r + 3))
+    if x1 <= x0 or y1 <= y0:
+        return img
+    yy, xx = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    d = np.sqrt((xx - x) ** 2 + (yy - y) ** 2)
+    if ring > 0.0:
+        m = (np.exp(-((d - r * 0.90) / (r * 0.24 + 1e-3)) ** 2) * ring +
+             np.clip(1.0 - d / (r * 0.80 + 1e-3), 0, 1) ** 1.4 * amp * 0.5)
+    else:
+        m = np.clip(1.0 - d / (r + 1e-3), 0, 1) ** 1.6 * amp
+    c = np.asarray(col, np.float32) / 255.0
+    patch = img[y0:y1, x0:x1]
+    img[y0:y1, x0:x1] = screen(patch, m[..., None] * c[None, None, :])
+    return img
+
+
+def lens_flare(img, cx, cy, s, tint=(255, 253, 240), ghosts=6):
+    """Sonne mit Kern, Halo, Sternstrahlen, Blendenstreifen und Ghosts."""
+    h, w, _ = img.shape
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    dx, dy = xs - cx, ys - cy
+    d = np.sqrt(dx * dx + dy * dy)
+    core = np.exp(-(d / (0.075 * s)) ** 2)
+    inner = np.exp(-(d / (0.17 * s)) ** 2) * 0.75
+    halo = np.exp(-(d / (0.65 * s)) ** 2) * 0.35
+    img = screen(img, colorize(np.clip(core + inner + halo, 0, 2), tint))
+    ang = np.arctan2(dy, dx)
+    rays = (0.5 + 0.5 * np.cos(ang * 12.0)) ** 8
+    img = screen(img, colorize(rays * np.exp(-d / (0.55 * s)) * 0.30, tint))
+    streak = np.exp(-((dx / (1.15 * s)) ** 2 + (dy / (0.010 * s)) ** 2))
+    img = screen(img, colorize(streak * 0.45, tint))
+    tx, ty = w * 0.5 - cx, h * 0.5 - cy
+    gcols = [(140, 255, 210), (255, 170, 215), (170, 205, 255), (255, 235, 170)]
+    for i in range(1, ghosts + 1):                     # Blenden-Geister
+        t = 1.7 * i / (ghosts + 1)
+        gx, gy = cx + tx * t, cy + ty * t
+        rr = max(2.0, s * (0.05 + 0.045 * (i % 4)))
+        gd = np.sqrt((xs - gx) ** 2 + (ys - gy) ** 2)
+        ring = np.exp(-((gd - rr) / (rr * 0.35 + 1e-3)) ** 2) * 0.10
+        ring = ring + np.exp(-(gd / (rr * 0.9 + 1e-3)) ** 2) * 0.07
+        img = screen(img, colorize(ring, gcols[i % 4]))
+    return img
+
+
+def aero_drop(img, x, y, r, gain=1.10):
+    """Wassertropfen: gebrochener Mini-Ausschnitt, heller Rand, Glanz."""
+    h, w, _ = img.shape
+    pad = int(r * 1.7) + 3
+    x0, x1 = int(max(0, x - pad)), int(min(w, x + pad))
+    y0, y1 = int(max(0, y - pad)), int(min(h, y + pad))
+    if x1 - x0 < 5 or y1 - y0 < 5:
+        return img
+    yy, xx = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    dx, dy = xx - x, yy - y
+    d = np.sqrt(dx * dx + dy * dy)
+    inside = d <= r
+    sx = np.clip((x + dx * 1.15 + 0.30 * r).astype(np.int32), 0, w - 1)
+    sy = np.clip((y + dy * 1.15 + 0.22 * r).astype(np.int32), 0, h - 1)
+    ref = img[sy, sx]                                   # Brechung (verkehrt herum)
+    rim = np.exp(-((d - r * 0.94) / (r * 0.16 + 1e-3)) ** 2) * 0.45
+    spec = np.exp(-(((dx + 0.38 * r) ** 2 + (dy + 0.42 * r) ** 2) /
+                    (2 * (r * 0.15) ** 2 + 1e-6)))
+    spec = spec + 0.5 * np.exp(-(((dx - 0.55 * r) ** 2 + (dy - 0.52 * r) ** 2) /
+                                 (2 * (r * 0.10) ** 2 + 1e-6)))
+    lit = ref * gain + rim[..., None] * 0.55
+    out = np.where(inside[..., None], lit, img[y0:y1, x0:x1])
+    out = out + (spec * inside)[..., None] * 0.95
+    shadow = np.exp(-((d - r * 1.14) / (r * 0.22 + 1e-3)) ** 2) * (dy > 0)
+    img[y0:y1, x0:x1] = np.clip(out * (1.0 - shadow[..., None] * 0.55), 0, 4)
+    return img
+
+
+def aero_shadow(img, cx, cy, rx, ry, amp=0.35):
+    """Weiche Ellipsen-Kontaktschattierung (dunkelt bestehendes Bild ab)."""
+    h, w, _ = img.shape
+    x0, x1 = int(max(0, cx - rx - 2)), int(min(w, cx + rx + 3))
+    y0, y1 = int(max(0, cy - ry - 2)), int(min(h, cy + ry + 3))
+    if x1 <= x0 or y1 <= y0:
+        return img
+    yy, xx = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    d = np.sqrt(((xx - cx) / max(rx, 1e-3)) ** 2 + ((yy - cy) / max(ry, 1e-3)) ** 2)
+    m = np.clip(1.0 - d, 0, 1) ** 1.4
+    img[y0:y1, x0:x1] *= (1.0 - amp * m)[..., None]
+    return img
+
+
+def aero_sphere(img, x, y, r, col, gloss=1.0):
+    """Glänzende 3D-Kugel: Lambert-Schattierung, Fresnel-Rim, Highlight."""
+    h, w, _ = img.shape
+    x0, x1 = int(max(0, x - r - 1)), int(min(w, x + r + 2))
+    y0, y1 = int(max(0, y - r - 1)), int(min(h, y + r + 2))
+    if x1 <= x0 or y1 <= y0:
+        return img
+    yy, xx = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    nx, ny = (xx - x) / r, (yy - y) / r
+    rr = nx * nx + ny * ny
+    inside = rr <= 1.0
+    nz = np.sqrt(np.clip(1.0 - rr, 0, 1))
+    lam = np.clip(nx * -0.45 + ny * -0.62 + nz * 0.64, 0, 1)
+    base = np.asarray(col, np.float32) / 255.0
+    body = base[None, None, :] * (0.32 + 0.85 * lam[..., None])
+    rim = ((1.0 - nz) ** 3)[..., None] * base[None, None, :] * 0.55
+    spec = np.exp(-(((nx + 0.42) ** 2 + (ny + 0.50) ** 2) / 0.045))
+    spec = spec + 0.35 * np.exp(-(((nx - 0.55) ** 2 + (ny - 0.62) ** 2) / 0.09))
+    shine = spec[..., None] * np.asarray((1.0, 1.0, 1.0), np.float32) * (0.9 * gloss)
+    sphere = body + rim + shine
+    img[y0:y1, x0:x1] = np.where(inside[..., None], sphere, img[y0:y1, x0:x1])
+    return img
+
+
+def aero_bubble(img, x, y, r, phase=0.0):
+    """Seifenblase: irisierender Rand, leichter Innenfilm, zwei Glanzpunkte."""
+    h, w, _ = img.shape
+    pad = int(r) + 4
+    x0, x1 = int(max(0, x - pad)), int(min(w, x + pad))
+    y0, y1 = int(max(0, y - pad)), int(min(h, y + pad))
+    if x1 - x0 < 5 or y1 - y0 < 5:
+        return img
+    yy, xx = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    dx, dy = xx - x, yy - y
+    d = np.sqrt(dx * dx + dy * dy)
+    shell = np.exp(-((d - r * 0.96) / (r * 0.15 + 1e-3)) ** 2)
+    ang = np.arctan2(dy, dx)
+    t = 0.5 + 0.5 * np.sin(ang * 2.0 + phase)
+    irid = ramp(t, [(255, 130, 210), (150, 255, 225), (255, 245, 170),
+                    (170, 200, 255), (255, 130, 210)])
+    inner = np.clip(1.0 - d / (r * 0.94 + 1e-3), 0, 1)
+    spec = np.exp(-(((dx + 0.40 * r) ** 2 + (dy + 0.44 * r) ** 2) /
+                    (2 * (r * 0.13) ** 2 + 1e-6)))
+    spec = spec + 0.6 * np.exp(-(((dx - 0.55 * r) ** 2 + (dy - 0.58 * r) ** 2) /
+                                 (2 * (r * 0.08) ** 2 + 1e-6)))
+    add = shell[..., None] * irid * 0.75 + inner[..., None] * 0.05
+    patch = img[y0:y1, x0:x1]
+    img[y0:y1, x0:x1] = screen(patch, add + spec[..., None] * 0.95)
+    return img
+
+
+def aero_panel(img, x, y, ww, hh, tint=(255, 255, 255), alpha=0.40, rad=None):
+    """Aero-Glass-Panel: weicher Hintergrund, Rahmen, Glanz und Schatten."""
+    h, w, _ = img.shape
+    x0, y0 = int(max(0, x)), int(max(0, y))
+    x1, y1 = int(min(w, x + ww)), int(min(h, y + hh))
+    if x1 - x0 < 10 or y1 - y0 < 10:
+        return img
+    ph, pw = y1 - y0, x1 - x0
+    rad = float(rad if rad is not None else min(26, min(pw, ph) // 5))
+    crop = img[y0:y1, x0:x1]
+    soft = blur_rgb(crop, max(6, min(pw, ph) // 14), 2)
+    m = rounded_mask(pw, ph, rad)
+    gy = np.linspace(0.0, 1.0, ph, dtype=np.float32)[:, None, None]
+    sheen = (1.0 - gy) ** 2 * 0.55
+    tcol = np.asarray(tint, np.float32) / 255.0
+    panel = (soft * (1.0 - alpha * 0.55) +
+             tcol[None, None, :] * alpha * 0.75 + sheen)
+    edge = np.clip(m - rounded_mask(pw, ph, max(1.0, rad - 2.5)), 0, 1)
+    panel = screen(panel, edge[..., None] * tcol[None, None, :] * 0.85)
+    img[y0:y1, x0:x1] = crop * (1.0 - m[..., None]) + panel * m[..., None]
+    top = np.exp(-((np.arange(ph, dtype=np.float32)[:, None] - 1.6) / 1.6) ** 2)
+    img[y0:y1, x0:x1] = screen(img[y0:y1, x0:x1],
+                               top[:, None] * 0.55 * m[..., None])
+    sy0, sy1 = y1, min(h, y1 + 12)                     # Schatten darunter
+    if sy1 > sy0:
+        sh = np.linspace(0.5, 0.0, sy1 - sy0, dtype=np.float32)[:, None, None]
+        img[sy0:sy1, max(0, x0 + 8):x1] *= (1.0 - 0.30 * sh)
+    return img
+
+
+def jagged(x0, y0, x1, y1, segs, spread, rng):
+    """Zickzack-Polylinie für Blitze/Entladungen."""
+    pts = [(float(x0), float(y0))]
+    for s in range(1, segs + 1):
+        t = s / segs
+        j = np.sin(np.pi * t)
+        pts.append((float(x0 + (x1 - x0) * t + rng.normal(0, spread) * j),
+                    float(y0 + (y1 - y0) * t + rng.normal(0, spread) * j)))
+    return pts
+
+
+# --------------------------------------------------- Aero-Motive -------
+def aero_sky(w, h, rng, seed):
+    """Frutiger Aero: strahlend blauer Himmel mit Wolkentürmen und Flare."""
+    img = sky(w, h, (28, 120, 242), (156, 218, 252))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    for cyv, cells, op, th in ((0.26, 6, 1.00, 0.52), (0.46, 9, 0.85, 0.55),
+                               (0.64, 13, 0.55, 0.58)):
+        f = fbm(w, h, cells, 4, rng)
+        band = np.exp(-((ys - h * cyv) / (h * 0.11)) ** 2)
+        m = np.clip((f * (0.50 + 0.85 * band) - th) * 6.0, 0, 1) * op
+        img = screen(img, colorize(blur(m, max(w, h) // 95, 2), (255, 255, 255)))
+        lift = np.clip(m - 0.55, 0, 1)
+        img = screen(img, colorize(blur(lift, max(w, h) // 130, 1) * 0.55,
+                                   (255, 255, 255)))
+    t = np.clip((ys - h * 0.80) / (h * 0.26), 0, 1)    # warmer Dunst unten
+    img = screen(img, ramp(t, [(255, 255, 255), (228, 245, 255),
+                               (255, 244, 224)]) * 0.07)
+    img = lens_flare(img, w * 0.76, h * 0.20, h * 0.40, (255, 254, 242))
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 30000), 0.8, 1),
+                               (255, 255, 255)))
+    return finish(img, w, h, seed, vig=0.16, lines=0.0)
+
+
+def aero_hills(w, h, rng, seed):
+    """Frutiger Aero: glänzende grüne Hügel, spiegelnder See, Sonnenflair."""
+    img = sky(w, h, (30, 124, 242), (198, 234, 254))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    f = fbm(w, h, 6, 4, rng)                           # Wolkenschleier
+    band = np.exp(-((ys - h * 0.16) / (h * 0.11)) ** 2)
+    m = np.clip((f * (0.50 + band) - 0.50) * 5.0, 0, 1)
+    img = screen(img, colorize(blur(m, max(w, h) // 80, 2) * 0.95, (255, 255, 255)))
+    img = lens_flare(img, w * 0.24, h * 0.20, h * 0.32, (255, 253, 240), ghosts=5)
+
+    lake_y = int(h * 0.80)
+    cols = [(170, 226, 92), (108, 198, 62), (54, 158, 44), (26, 116, 38)]
+    for i in range(4):                                 # Hügelschichten
+        prof = smooth_noise(w, 14, 5 + i * 4, 4, rng)[3]
+        prof = (prof - prof.min()) / (np.ptp(prof) + 1e-6)
+        py = h * (0.50 + 0.075 * i) - h * (0.17 - 0.022 * i) * prof
+        py = np.minimum(py, float(lake_y - 2))
+        below = ys >= py[None, :]
+        col = np.asarray(cols[i], np.float32) / 255.0
+        shade = 1.0 - 0.40 * smoothstep(ys - py[None, :], 0.0, h * 0.22)
+        sheen = 0.06 + 0.10 * np.exp(
+            -((ys - py[None, :] - h * 0.035) / (h * 0.05)) ** 2)
+        fill = col[None, None, :] * shade[..., None] + sheen[..., None]
+        img = np.where(below[..., None], np.clip(fill, 0, 1.35), img)
+        rim = np.exp(-((ys - py[None, :]) ** 2) / (2 * (h * 0.0035) ** 2))
+        rim = np.where(ys < py[None, :], rim, 0.0)
+        img = screen(img, colorize(rim * 0.40, (240, 255, 205)))
+        mist = np.exp(-((py[None, :] - ys) / (h * 0.022)) ** 2)
+        mist = np.where(ys < py[None, :], mist, 0.0)
+        img = screen(img, mist[..., None] * np.asarray((1.0, 1.0, 1.0),
+                                                       np.float32) * 0.07)
+
+    lake = ys >= lake_y                               # See mit Spiegelung
+    iy = np.clip(2 * lake_y - ys, 0, h - 1).astype(np.int32)
+    refl = blur_rgb(img[iy, xs.astype(np.int32)], max(3, h // 240), 2)
+    ripple = fbm(w, h, 5, 2, rng)
+    wave = 0.5 + 0.5 * np.sin(ys * 0.30 + np.sin(xs * 0.014 + ripple * 6.0) * 2.4)
+    tint = np.asarray((86, 176, 236), np.float32) / 255.0
+    water = refl * 0.70 + tint[None, None, :] * 0.30
+    water = water * (0.90 + 0.13 * wave[..., None])
+    img = np.where(lake[..., None], water, img)
+    edge = np.exp(-((ys - lake_y) ** 2) / (2 * (h * 0.004) ** 2))
+    img = screen(img, colorize(edge * 0.5, (255, 255, 255)))
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 34000), 0.7, 1) * lake,
+                               (255, 255, 255)))
+    return finish(img, w, h, seed, vig=0.15, lines=0.0)
+
+
+def aero_drops(w, h, rng, seed):
+    """Frutiger Aero: Wassertropfen im Makro über grün-blauem Bokeh."""
+    img = sky(w, h, (176, 240, 196), (46, 138, 226))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    for _ in range(30):                                # Bokeh-Ebenen
+        col = [(245, 255, 250), (205, 255, 225), (215, 240, 255),
+               (255, 255, 235)][int(rng.integers(0, 4))]
+        glow_disc(img, rng.uniform(-0.05, 1.05) * w, rng.uniform(-0.05, 1.05) * h,
+                  rng.uniform(0.03, 0.12) * h, col,
+                  amp=rng.uniform(0.10, 0.22),
+                  ring=float(rng.random() < 0.5))
+    for _ in range(6):                                 # Farbflecken vor dem Blur
+        glow_disc(img, rng.uniform(0, w), rng.uniform(0, h),
+                  rng.uniform(0.14, 0.30) * h,
+                  [(120, 220, 160), (70, 170, 245), (240, 255, 235),
+                   (90, 200, 230)][int(rng.integers(0, 4))],
+                  amp=rng.uniform(0.18, 0.34))
+    img = blur_rgb(img, max(6, max(w, h) // 110), 2)   # Makro-Unschärfe
+    for _ in range(10):                                # Lichtflecken unten
+        glow_disc(img, rng.uniform(0, w), h * rng.uniform(0.86, 1.02),
+                  rng.uniform(0.04, 0.10) * h, (150, 230, 120),
+                  amp=rng.uniform(0.12, 0.24))
+    for k in range(3):                                 # einfallende Strahlen
+        x0 = rng.uniform(0.1, 0.9) * w
+        slope = rng.uniform(0.25, 0.60)
+        d = np.abs(ys - slope * (xs - x0)) / np.sqrt(1.0 + slope * slope)
+        m = np.exp(-(d / (w * 0.05)) ** 2) * np.clip(1.3 - ys / h, 0.1, 1.0)
+        img = screen(img, colorize(m * 0.10, (255, 255, 255)))
+    for _ in range(9):                                 # große Tropfen
+        aero_drop(img, rng.uniform(0.10, 0.90) * w, rng.uniform(0.15, 0.85) * h,
+                  rng.uniform(0.05, 0.085) * h)
+    for _ in range(26):                                # feine Spritzer
+        aero_drop(img, rng.uniform(0.03, 0.97) * w, rng.uniform(0.05, 0.95) * h,
+                  rng.uniform(0.016, 0.045) * h)
+    return finish(img, w, h, seed, vig=0.20, lines=0.0)
+
+
+def aero_glass(w, h, rng, seed):
+    """Frutiger Aero: Glaspanels, Lichtstrahlen und Seifenblasen."""
+    img = sky(w, h, (34, 118, 234), (156, 246, 232))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    for k in range(5):                                 # Lichtstrahlen
+        x0 = rng.uniform(-0.1, 1.0) * w
+        slope = rng.uniform(0.5, 1.3)
+        if k % 2:
+            slope = -slope
+        d = np.abs(ys - slope * (xs - x0)) / np.sqrt(1.0 + slope * slope)
+        m = np.exp(-(d / (w * rng.uniform(0.015, 0.05))) ** 2)
+        m = m * np.clip(1.3 - ys / h, 0, 1)
+        img = screen(img, colorize(m * rng.uniform(0.08, 0.16), (255, 255, 255)))
+    for _ in range(7):                                 # Blasen hinten
+        aero_bubble(img, rng.uniform(0, w), rng.uniform(0, h * 0.8),
+                    rng.uniform(0.05, 0.11) * h, float(rng.uniform(0, 6.3)))
+    aero_panel(img, w * 0.10, h * 0.22, w * 0.40, h * 0.34, alpha=0.40)
+    aero_panel(img, w * 0.52, h * 0.42, w * 0.36, h * 0.30, alpha=0.34)
+    aero_panel(img, w * 0.16, h * 0.66, w * 0.30, h * 0.20, alpha=0.28)
+    for _ in range(8):                                 # Blasen davor
+        aero_bubble(img, rng.uniform(0, w), rng.uniform(0, h),
+                    rng.uniform(0.02, 0.07) * h, float(rng.uniform(0, 6.3)))
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 34000), 0.7, 1),
+                               (255, 255, 255)))
+    return finish(img, w, h, seed, vig=0.18, lines=0.0)
+
+
+def aero_orbs(w, h, rng, seed):
+    """Frutiger Aero: glänzende Kugeln auf reflektierendem Boden."""
+    img = sky(w, h, (96, 178, 250), (236, 247, 255))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    floor_y = h * 0.68
+    floor_col = np.asarray((216, 236, 250), np.float32) / 255.0
+    grad = np.clip((ys - floor_y) / (h * 0.32), 0, 1)[..., None]
+    img = np.where((ys >= floor_y)[..., None],
+                   floor_col[None, None, :] * (1.05 - 0.25 * grad), img)
+    hor = np.exp(-((ys - floor_y) ** 2) / (2 * (h * 0.010) ** 2))
+    img = screen(img, colorize(hor * 0.6, (255, 255, 255)))
+    img = lens_flare(img, w * 0.82, h * 0.13, h * 0.30, (255, 254, 248), ghosts=4)
+
+    balls = [(0.24, 0.185, (0, 205, 240), True),
+             (0.50, 0.125, (140, 230, 84), True),
+             (0.70, 0.085, (255, 116, 200), False),
+             (0.84, 0.145, (255, 214, 92), False)]
+    for xf, rf, col, on_floor in balls:
+        r = min(w, h) * rf
+        cx = w * xf
+        cy = floor_y - r if on_floor else h * (0.34 + 0.20 * (1 - rf))
+        aero_shadow(img, cx, floor_y if on_floor else cy + r * 1.05,
+                    r * 1.2, r * 0.30, amp=0.34)
+        tmp = np.zeros_like(img)                      # Reflexion unter der Kugel
+        aero_sphere(tmp, cx, 2 * floor_y - cy, r, col)
+        fade = np.clip(1.0 - (ys - floor_y) / (h * 0.34), 0, 1) * (ys >= floor_y)
+        img = np.where((ys >= floor_y)[..., None],
+                       screen(img, tmp * 0.40 * fade[..., None]), img)
+        aero_sphere(img, cx, cy, r, col)
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 40000), 0.7, 1) *
+                               (ys < floor_y), (255, 255, 255)))
+    return finish(img, w, h, seed, vig=0.16, lines=0.0)
+
+
+# ------------------------------------------------- Plasma-Motive -------
+def pa_ball(w, h, rng, seed):
+    """Plasmakugel: Glaskugel mit kletternden Entladungen."""
+    img = sky(w, h, (7, 5, 24), (30, 7, 58))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    cx, cy = w * 0.5, h * 0.50
+    rg, rp = min(w, h) * 0.42, min(w, h) * 0.17
+    d = np.sqrt((xs - cx) ** 2 + (ys - cy) ** 2)
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 5000), 0.8, 1),
+                               PALETTE["white"]))
+    film = np.clip(1.0 - d / rg, 0, 1) ** 0.5          # Glasfilm
+    img = screen(img, colorize(film * 0.10, (90, 130, 255)))
+    gr = np.exp(-((d - rg) / (rg * 0.020)) ** 2)       # Glasrand
+    img = screen(img, colorize(gr * 0.75, (235, 245, 255)))
+    inside = d < rp                                    # Kernkugel
+    nz = np.sqrt(np.clip(1.0 - (d / max(rp, 1e-3)) ** 2, 0, 1))
+    tex = fbm(w, h, 9, 4, rng)
+    ball = ramp(tex, [(255, 255, 255), (205, 150, 255), (150, 60, 230),
+                      (60, 16, 120)])
+    img = np.where(inside[..., None], ball * (0.55 + 0.75 * nz[..., None]), img)
+    pr = np.exp(-((d - rp) / (rp * 0.10)) ** 2)
+    img = screen(img, colorize(pr * 0.9, (255, 245, 255)))
+    img = screen(img, colorize(np.exp(-(d / (rp * 0.55)) ** 2) * 0.9,
+                               (255, 255, 255)))
+    cols = [(190, 235, 255), (255, 160, 235), (170, 140, 255), (255, 255, 255)]
+    for _ in range(22):                                # Entladungen
+        a0 = rng.uniform(0, 2 * np.pi)
+        a1 = a0 + rng.normal(0, 0.55)
+        r0, r1 = rp * rng.uniform(0.55, 0.98), rg * rng.uniform(0.86, 0.99)
+        pts = jagged(cx + np.cos(a0) * r0, cy + np.sin(a0) * r0,
+                     cx + np.cos(a1) * r1, cy + np.sin(a1) * r1,
+                     int(rng.integers(5, 9)), rg * 0.10, rng)
+        m = np.clip(line_mask(w, h, pts, width=float(rng.uniform(2.5, 4.5)),
+                              core_boost=2.6), 0, 1)
+        img = screen(img, colorize(m * rng.uniform(0.55, 0.90),
+                                   cols[int(rng.integers(0, 4))]))
+    glow = blur(np.clip((d < rg).astype(np.float32), 0, 1), max(w, h) // 14, 2)
+    img = screen(img, colorize(glow * 0.35, (150, 90, 255)))
+    img = screen(img, colorize(blur(gr, max(w, h) // 45, 2) * 0.50,
+                               PALETTE["magenta"]))
+    return finish(img, w, h, seed, vig=0.5, lines=0.05)
+
+
+def pa_filament(w, h, rng, seed):
+    """Plasma-Adern: feine gewundene Energiefäden über dunklem Violett."""
+    img = sky(w, h, (10, 4, 28), (36, 8, 64))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    x, y = xs / w, ys / h
+    w1 = fbm(w, h, 3, 4, rng)
+    w2 = fbm(w, h, 6, 3, rng)
+    v = (np.sin((x * 4.5 + y * 2.0 + w1 * 6.5) * 2.4) * 0.55 +
+         np.sin((y * 5.5 - x * 1.5 + w2 * 5.5) * 2.1) * 0.45)
+    f2 = np.abs(v)
+    core = np.exp(-(f2 * f2) / 0.0012)
+    soft = np.exp(-(f2 * f2) / 0.020)
+    energy = np.clip((w1 * 0.55 + w2 * 0.45 - 0.32) * 2.6, 0, 1)
+    col = ramp(energy, [(0, 240, 255), (110, 120, 255), (255, 70, 190),
+                        (255, 235, 170)])
+    img = screen(img, col * (soft * 0.55)[..., None])
+    img = screen(img, colorize(core, (255, 255, 255)))
+    img = screen(img, colorize(blur(core, max(w, h) // 55, 2) * 0.75,
+                               PALETTE["magenta"]))
+    img = screen(img, colorize(blur(soft, max(w, h) // 14, 2) * 0.35,
+                               (60, 30, 140)))
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 7000), 0.9, 1),
+                               (255, 255, 255)))
+    return finish(img, w, h, seed, vig=0.5, lines=0.05)
+
+
+def pa_ribbons(w, h, rng, seed):
+    """Plasmabänder: fließende leuchtende Energie-Bänder."""
+    img = sky(w, h, (6, 5, 24), (28, 8, 54))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    x = xs / w
+    warp = fbm(w, h, 4, 4, rng)
+    cols = [(255, 62, 158), (126, 96, 255), (0, 226, 255), (255, 176, 70),
+            (255, 110, 220)]
+    glow_m = np.zeros((h, w), np.float32)
+    for i in range(5):
+        base = h * (0.13 + 0.17 * i)
+        amp = h * rng.uniform(0.05, 0.10)
+        ph = rng.uniform(0, 6.283)
+        yc = base + amp * np.sin(2 * np.pi * rng.uniform(0.8, 1.7) * x + ph +
+                                 warp * (1.2 + 0.5 * i))
+        th = h * rng.uniform(0.014, 0.030)
+        dd = ys - yc
+        band = np.exp(-(dd / th) ** 2)
+        core = np.exp(-(dd / (th * 0.32)) ** 2)
+        col = np.asarray(cols[i], np.float32) / 255.0
+        img = screen(img, band[..., None] * col[None, None, :] * 0.80)
+        img = screen(img, core[..., None] * np.asarray((1.0, 1.0, 1.0),
+                                                       np.float32) * 0.55)
+        nodes = np.clip(np.sin(x * 40 + warp * 8), 0, 1) ** 6
+        img = screen(img, (band * nodes * 0.5)[..., None] * col[None, None, :])
+        glow_m += band * 0.6 + core * 0.4
+    img = screen(img, blur(np.clip(glow_m, 0, 1), max(w, h) // 40, 2)[..., None] *
+                 np.asarray((0.85, 0.55, 1.0), np.float32) * 0.55)
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 6000), 0.8, 1),
+                               (255, 255, 255)))
+    return finish(img, w, h, seed, vig=0.5, lines=0.05)
+
+
+def pa_core(w, h, rng, seed):
+    """Energiekern: heißer Zündpunkt mit Pulsschwellen und Strahlen."""
+    img = sky(w, h, (5, 4, 18), (26, 7, 52))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    cx, cy = w * 0.5, h * 0.5
+    dx, dy = xs - cx, ys - cy
+    d = np.sqrt(dx * dx + dy * dy)
+    rn = d / (min(w, h) * 0.5)
+    ang = np.arctan2(dy, dx)
+    neb = fbm(w, h, 5, 5, rng)
+    env = np.clip(1.5 - rn, 0, 1) * (0.5 + 0.7 * neb)  # Energie-Nebel
+    img = screen(img, colorize(env * 0.42, (120, 40, 210)))
+    img = screen(img, colorize(env * 0.25, PALETTE["magenta"]))
+    rays = (0.5 + 0.5 * np.cos(ang * 24.0 + neb * 5.0)) ** 12
+    streak = rays * np.clip(rn - 0.12, 0, 1) * np.exp(-rn * 1.7)
+    img = screen(img, colorize(streak * 0.55, (255, 210, 150)))
+    for k in range(4):                                 # Pulsschwellen
+        kr = 0.30 + 0.24 * k
+        ring = np.exp(-((rn - kr) / 0.022) ** 2) * (0.85 - 0.15 * k)
+        img = screen(img, colorize(ring,
+                                   [(120, 230, 255), (255, 120, 210),
+                                    (170, 150, 255), (120, 230, 255)][k % 4]))
+    img = screen(img, colorize(np.exp(-(rn / 0.42) ** 2) * 0.75, (255, 90, 180)))
+    img = screen(img, colorize(np.exp(-(rn / 0.24) ** 2) * 0.85, (140, 225, 255)))
+    img = screen(img, colorize(np.exp(-(rn / 0.10) ** 2) * 1.10, (255, 255, 255)))
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 7000), 0.8, 1),
+                               (255, 255, 255)))
+    return finish(img, w, h, seed, vig=0.5, lines=0.05)
+
+
+def pa_swirl(w, h, rng, seed):
+    """Plasmawirbel: Spiralarme aus heißen Fäden mit glühendem Auge."""
+    img = sky(w, h, (8, 4, 26), (32, 7, 58))
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    cx, cy = w * 0.5, h * 0.47
+    dx, dy = xs - cx, ys - cy
+    r = np.sqrt(dx * dx + dy * dy) + 1.0
+    ang = np.arctan2(dy, dx)
+    warp = fbm(w, h, 5, 4, rng)
+    rr = np.maximum(r, h * 0.04)
+    v = np.abs(np.sin(ang * 2.0 + np.log(rr / (h * 0.05)) * 7.5 + warp * 4.5))
+    env = np.exp(-r / (min(w, h) * 0.46))
+    fil = np.exp(-(v * v) / 0.010) * env
+    fil2 = np.exp(-(v * v) / 0.0016) * env
+    heat = np.clip(1.4 - r / (min(w, h) * 0.40), 0, 1)
+    col = ramp(heat, [(70, 30, 140), (200, 60, 220), (255, 140, 90),
+                      (255, 245, 210)])
+    img = screen(img, col * (fil * 0.85)[..., None])
+    img = screen(img, colorize(fil2 * 0.9, (255, 255, 255)))
+    img = screen(img, colorize(np.exp(-(r / (h * 0.10)) ** 2) * 0.90,
+                               (255, 240, 235)))
+    img = screen(img, colorize(np.exp(-(r / (h * 0.22)) ** 2) * 0.50,
+                               PALETTE["magenta"]))
+    img = screen(img, colorize(blur(fil2, max(w, h) // 60, 2) * 0.60,
+                               (255, 120, 240)))
+    img = screen(img, colorize(stars(w, h, rng, int(w * h / 6000), 0.7, 1),
+                               (255, 255, 255)))
+    return finish(img, w, h, seed, vig=0.5, lines=0.05)
+
+
 # ---------------------------------------------------- Pixel-Stil ------
 # Eigene Pipeline: Low-Res-Canvas zeichnen -> auf Retro-Paletten
 # quantisieren (Bayer-Dithering) -> nearest-neighbor hochskalieren.
@@ -1744,6 +2281,12 @@ BUILDERS = {"grid": m_grid, "nebula": m_nebula, "burst": m_burst,
             "fireworks": m_fireworks, "galaxy": m_galaxy,
             "highway": m_highway, "shards": m_shards, "eq": m_eq,
             "lightning": m_lightning, "orbit": m_orbit,
+            "aero_sky": aero_sky, "aero_hills": aero_hills,
+            "aero_drops": aero_drops, "aero_glass": aero_glass,
+            "aero_orbs": aero_orbs,
+            "plasma_ball": pa_ball, "plasma_filament": pa_filament,
+            "plasma_ribbons": pa_ribbons, "plasma_core": pa_core,
+            "plasma_swirl": pa_swirl,
             "px_space": px_space, "px_invader": px_invader,
             "px_sunset": px_sunset, "px_maze": px_maze, "px_snake": px_snake,
             "px_platform": px_platform, "px_boss": px_boss,
