@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# lokaler Spielstand
+neon_vanguard_highscore.txt
