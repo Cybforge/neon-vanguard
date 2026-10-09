@@ -68,7 +68,7 @@ neon_art.py  prozeduraler Art-/Wallpaper-Generator (PNG, ohne Display)
 `neon_art.py` erzeugt Wallpaper und Key-Art im Look des Spiels – wie die
 Sounds und die Spielgrafik selbst komplett aus Zahlen berechnet, ohne eine
 einzige Bilddatei als Vorlage. Läuft ohne Display (nur `numpy`) und schreibt
-PNGs. **19 Motive**, alle per Seed reproduzierbar.
+PNGs. **29 Motive** (19 Neon- + 10 Pixel-Motive), alle per Seed reproduzierbar.
 
 ```bash
 python neon_art.py --list
@@ -120,9 +120,41 @@ Vier Motive, jedes mit eigenem Seed reproduzierbar:
 |---|
 | ![orbit](art/orbit.png) |
 
-Alle 19 Motive auf einen Blick (jeweils Seed 42, 640×360):
+### Die 10 Pixel-Motive (Retro-Stil)
+
+Ein komplett anderer Look: Statt weicher Verläufe und Glows zeichnen diese
+Motive auf einer Low-Res-Fläche (160×90 Pixel), quantisieren jede Farbe auf
+eine klassische Retro-Palette (Game Boy, CGA, Arcade, Outrun …) und
+skalieren verlustfrei nearest-neighbour hoch. Dazu Bayer-Dithering –
+also echtes Pixel-Art-Handwerk, nur komplett aus Zahlen:
+
+| `px_space` – Side-Scroller im All | `px_invader` – Invader-Formation |
+|---|---|
+| ![px_space](art/px_space.png) | ![px_invader](art/px_invader.png) |
+
+| `px_sunset` – Outrun-Straße | `px_maze` – Mazeduelle |
+|---|---|
+| ![px_sunset](art/px_sunset.png) | ![px_maze](art/px_maze.png) |
+
+| `px_snake` – Snake-Board | `px_platform` – Jump-’n’-Run |
+|---|---|
+| ![px_snake](art/px_snake.png) | ![px_platform](art/px_platform.png) |
+
+| `px_boss` – Bosskampf | `px_racer` – Rennstrecke |
+|---|---|
+| ![px_boss](art/px_boss.png) | ![px_racer](art/px_racer.png) |
+
+| `px_gbland` – Game-Boy-Landschaft | `px_moon` – Mondlandung |
+|---|---|
+| ![px_gbland](art/px_gbland.png) | ![px_moon](art/px_moon.png) |
+
+Alle 19 Neon-Motive auf einen Blick (jeweils Seed 42, 640×360):
 
 ![Übersicht aller Motive](art/_sheet.png)
+
+Alle 10 Pixel-Motive auf einen Blick:
+
+![Übersicht der Pixel-Motive](art/_px_sheet.png)
 
 ## Dateien
 

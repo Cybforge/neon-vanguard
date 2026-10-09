@@ -46,7 +46,10 @@ except Exception:                                    # standalone nutzbar
 
 MOTIFS = ("grid", "nebula", "burst", "tunnel", "city", "ridges", "aurora",
           "eclipse", "plasma", "topo", "circuit", "rain", "fireworks",
-          "galaxy", "highway", "shards", "eq", "lightning", "orbit")
+          "galaxy", "highway", "shards", "eq", "lightning", "orbit",
+          # Retro-Pixel-Stil (Low-Res, Paletten, Bayer-Dithering)
+          "px_space", "px_invader", "px_sunset", "px_maze", "px_snake",
+          "px_platform", "px_boss", "px_racer", "px_gbland", "px_moon")
 
 
 # ---------------------------------------------------------------- PNG ---
@@ -1174,13 +1177,577 @@ def m_orbit(w, h, rng, seed):
     return finish(img, w, h, seed, vig=0.55, lines=0.045)
 
 
+# ---------------------------------------------------- Pixel-Stil ------
+# Eigene Pipeline: Low-Res-Canvas zeichnen -> auf Retro-Paletten
+# quantisieren (Bayer-Dithering) -> nearest-neighbor hochskalieren.
+BAYER4 = np.array([[0, 8, 2, 10], [12, 4, 14, 6],
+                   [3, 11, 1, 9], [15, 7, 13, 5]], np.float32) / 16.0 - 0.5
+
+PALS = {
+    # Game Boy (4 Grautöne der Originalpalette)
+    "gb": [(15, 56, 15), (48, 98, 48), (139, 172, 15), (155, 188, 15)],
+    # CGA Modus 4, Palette 1 (hoch)
+    "cga": [(6, 6, 26), (0, 170, 170), (170, 0, 170), (255, 85, 170),
+            (255, 255, 255)],
+    # Arcade-Automat: 8 feste Farben
+    "arcade": [(6, 6, 18), (36, 40, 140), (0, 200, 255), (255, 255, 255),
+               (240, 60, 70), (255, 210, 60), (70, 230, 110), (255, 80, 200)],
+    # Sunset / Outrun
+    "sunset": [(16, 6, 34), (72, 18, 96), (190, 40, 130), (255, 90, 90),
+               (255, 170, 60), (255, 235, 150), (255, 255, 255)],
+    # Platformer (Himmel, Erde, Münzen)
+    "plat": [(10, 10, 26), (92, 168, 248), (255, 255, 255), (168, 112, 56),
+             (64, 160, 64), (255, 210, 60), (240, 70, 70), (120, 60, 160)],
+    # Weltraum
+    "space": [(4, 4, 14), (24, 26, 70), (60, 90, 200), (0, 230, 255),
+              (255, 255, 255), (255, 220, 80), (255, 70, 170), (140, 255, 160)],
+}
+
+# Sprites: "#" = Pixel an, "." = aus
+INVADER = [
+    "..#.....#..",
+    "...#...#...",
+    "..#######..",
+    ".##.###.##.",
+    "###########",
+    "#.#######.#",
+    "#.#.....#.#",
+    "...##.##...",
+]
+SHIP = [
+    "....#....",
+    "...###...",
+    "..#####..",
+    ".#######.",
+    "#########",
+    ".#.###.#.",
+    "#..###..#",
+]
+# Seitanschauendes Raumschiff (Side-Scroller, zeigt nach rechts)
+RSHIP = [
+    "#........",
+    "###......",
+    "#####....",
+    "#######..",
+    "#########",
+    "#######..",
+    "#####....",
+    "###......",
+    "#........",
+]
+GHOST = [
+    "..####..",
+    ".######.",
+    "#.####.#",
+    "#.####.#",
+    "########",
+    "########",
+    "#.##.##.",
+    "#.#..#.#",
+]
+HERO = [
+    "..####..",
+    "..####..",
+    "...##...",
+    ".######.",
+    ".######.",
+    "..####..",
+    "..#..#..",
+    "..#..#..",
+]
+BOSS = [
+    "......########......",
+    "....############....",
+    "..################..",
+    ".##################.",
+    "###..########..#####",
+    "####################",
+    "####################",
+    ".####.######.####...",
+    "..##...####...##....",
+    "..#.....##.....#....",
+]
+CAR = [
+    "...###...",
+    "..#####..",
+    ".#######.",
+    "###.#.###",
+    "###.#.###",
+    ".#######.",
+    "..#####..",
+    "...###...",
+]
+LANDER = [
+    ".....#.....",
+    "....###....",
+    "...#####...",
+    "..#######..",
+    ".#.#####.#.",
+    ".#.#...#.#.",
+    "#...#.#...#",
+    "..##...##..",
+]
+
+
+def px_canvas(w, h, lw=160):
+    """Low-Res-Zeichenfläche mit dem Seitenverhältnis des Zielbildes."""
+    lw = int(lw)
+    lh = max(8, int(round(lw * h / w)))
+    return np.zeros((lh, lw, 3), np.float32), lw, lh
+
+
+def px_grad(c, top, bot):
+    """Vertikaler Verlauf als Grundfläche (wird gedithert)."""
+    ch = c.shape[0]
+    t = np.linspace(0.0, 1.0, ch, dtype=np.float32)[:, None, None]
+    a = np.asarray(top, np.float32) / 255.0
+    b = np.asarray(bot, np.float32) / 255.0
+    c[:] = a * (1 - t) + b * t
+
+
+def px_rect(c, x, y, ww, hh, col):
+    """Ausgefülltes Rechteck (Pixelkoordinaten, wird geclippt)."""
+    ch, cw, _ = c.shape
+    x0, y0 = int(max(0, x)), int(max(0, y))
+    x1, y1 = int(min(cw, x + ww)), int(min(ch, y + hh))
+    if x1 > x0 and y1 > y0:
+        c[y0:y1, x0:x1] = np.asarray(col, np.float32) / 255.0
+
+
+def px_hollow(c, x, y, ww, hh, col, t=1):
+    """Rand eines Rechtecks (Rahmenstärke t)."""
+    px_rect(c, x, y, ww, t, col)
+    px_rect(c, x, y + hh - t, ww, t, col)
+    px_rect(c, x, y, t, hh, col)
+    px_rect(c, x + ww - t, y, t, hh, col)
+
+
+def px_circ(c, cx, cy, r, col, hollow=False, t=1):
+    """Kreis als gefüllte Fläche oder 1px-Ring."""
+    ch, cw, _ = c.shape
+    x0, x1 = int(max(0, cx - r - 1)), int(min(cw, cx + r + 2))
+    y0, y1 = int(max(0, cy - r - 1)), int(min(ch, cy + r + 2))
+    if x1 <= x0 or y1 <= y0:
+        return
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    d = np.sqrt((xx - cx + 0.5) ** 2 + (yy - cy + 0.5) ** 2)
+    if hollow:
+        m = (d <= r + 0.5) & (d > r - t)
+    else:
+        m = d <= r + 0.5
+    sub = c[y0:y1, x0:x1]
+    sub[m] = np.asarray(col, np.float32) / 255.0
+
+
+def px_line(c, x0, y0, x1, y1, col):
+    """Einfache Linie (für Laser, Masten, Gitter)."""
+    ch, cw, _ = c.shape
+    n = int(max(abs(x1 - x0), abs(y1 - y0))) + 1
+    xs = np.round(np.linspace(x0, x1, n)).astype(np.int32)
+    ys = np.round(np.linspace(y0, y1, n)).astype(np.int32)
+    ok = (xs >= 0) & (xs < cw) & (ys >= 0) & (ys < ch)
+    c[ys[ok], xs[ok]] = np.asarray(col, np.float32) / 255.0
+
+
+def px_sprite(c, rows, x, y, col, sc=1):
+    """Sprite aus einer '#'/'.'-Maske setzen."""
+    col_a = np.asarray(col, np.float32) / 255.0
+    for ry, row in enumerate(rows):
+        for rx, ch_ in enumerate(row):
+            if ch_ == "#":
+                px_rect(c, x + rx * sc, y + ry * sc, sc, sc, col_a * 255.0)
+
+
+def px_out(c, w, h, pal_name, dither=0.6):
+    """Auf Palette quantisieren (Bayer) und verlustfrei hochskalieren."""
+    ch, cw, _ = c.shape
+    bay = BAYER4[np.arange(ch)[:, None] % 4, np.arange(cw)[None, :] % 4]
+    v = c + bay[..., None] * dither
+    p = np.asarray(PALS[pal_name], np.float32) / 255.0
+    d = ((v[..., None, :] - p[None, None]) ** 2).sum(-1)
+    q = p[d.argmin(-1)]
+    sx = -(-w // cw)
+    sy = -(-h // ch)
+    up = np.repeat(np.repeat(q, sy, 0), sx, 1)
+    return (np.clip(up[:h, :w], 0, 1) * 255.0 + 0.5).astype(np.uint8)
+
+
+def px_space(w, h, rng, seed):
+    """Pixel-Art: Side-Scroller im Weltraum."""
+    c, lw, lh = px_canvas(w, h)
+    px_grad(c, (24, 26, 70), (4, 4, 14))
+    for _ in range(lw * lh // 32):
+        col = (255, 255, 255) if rng.random() < 0.7 else (0, 230, 255)
+        px_rect(c, int(rng.integers(0, lw)), int(rng.integers(0, lh)),
+                1, 1, col)
+    pcx, pcy, pr = lw * 0.84, lh * 0.55, lh * 0.30
+    px_circ(c, pcx + 3, pcy + 3, pr, (24, 26, 70))
+    px_circ(c, pcx, pcy, pr, (60, 90, 200))
+    px_circ(c, pcx, pcy, pr, (0, 230, 255), hollow=True)
+    for ax, ay, ar in ((61, 15, 5), (80, 38, 6), (96, 65, 4)):   # Asteroiden
+        px_circ(c, ax, ay, ar, (60, 90, 200))
+        px_circ(c, ax - 1, ay - 1, max(1, ar // 3), (4, 4, 14))
+        px_circ(c, ax, ay, ar, (0, 230, 255), hollow=True)
+    sx, sy = int(lw * 0.10), int(lh * 0.46)
+    px_sprite(c, RSHIP, sx, sy, (255, 255, 255))
+    px_rect(c, sx + 4, sy + 3, 2, 2, (0, 230, 255))     # Cockpit
+    px_rect(c, sx - 4, sy + 4, 3, 1, (255, 170, 60))    # Triebwerk
+    px_rect(c, sx - 2, sy + 4, 2, 1, (255, 220, 80))
+    for i in range(3):                                  # Schüsse
+        px_rect(c, sx + 14 + i * 16, sy + 4, 6, 1, (255, 220, 80))
+    px_rect(c, 0, lh - 8, lw, 8, (4, 4, 14))            # HUD
+    for i in range(3):
+        px_rect(c, 4 + i * 6, lh - 6, 4, 4, (140, 255, 160))
+    for i in range(10):
+        px_rect(c, lw - 6 - (10 - i) * 6, lh - 6, 4, 4,
+                (255, 70, 170) if i < 7 else (24, 26, 70))
+    return px_out(c, w, h, "space")
+
+
+def px_invader(w, h, rng, seed):
+    """Pixel-Art: Invader-Formation à la Arcade-Automat."""
+    c, lw, lh = px_canvas(w, h)
+    px_rect(c, 0, 0, lw, lh, (6, 6, 26))
+    for _ in range(lw * lh // 80):
+        px_rect(c, int(rng.integers(0, lw)), int(rng.integers(0, lh)),
+                1, 1, (170, 0, 170))
+    rows = [(255, 85, 170), (170, 0, 170), (0, 170, 170)]
+    for r in range(3):
+        for k in range(5):
+            px_sprite(c, INVADER, 14 + k * 28, 18 + r * 16, rows[r])
+    px_sprite(c, SHIP, lw // 2 - 4, lh - 22, (255, 255, 255))
+    px_line(c, lw // 2, lh - 24, lw // 2, int(lh * 0.58), (255, 255, 255))
+    px_rect(c, 0, lh - 10, lw, 1, (0, 170, 170))
+    for i in range(3):                                  # Leben
+        px_rect(c, 5 + i * 9, 5, 7, 5, (0, 170, 170))
+    for i in range(8):                                  # Punkte
+        px_rect(c, lw - 7 - i * 7, 5, 6, 5,
+                (255, 85, 170) if i < 5 else (6, 6, 26))
+    return px_out(c, w, h, "cga", dither=0.35)
+
+
+def px_sunset(w, h, rng, seed):
+    """Pixel-Art: Outrun-Landschaft mit gestreifter Sonne."""
+    c, lw, lh = px_canvas(w, h)
+    px_grad(c, (72, 18, 96), (16, 6, 34))
+    horizon = int(lh * 0.55)
+    cx, cy, r = lw * 0.5, horizon - lh * 0.12, lh * 0.26
+    for y in range(int(cy - r), int(min(cy + r, horizon))):
+        dy = y - cy
+        if abs(dy) > r:
+            continue
+        if dy > r * 0.10 and int(dy) % 5 < 2:           # Streifen
+            continue
+        halfw = int(np.sqrt(max(0.0, r * r - dy * dy)))
+        px_rect(c, int(cx - halfw), y, 2 * halfw, 1,
+                (255, 170, 60) if dy < 0 else (255, 90, 90))
+    prof = smooth_noise(w, 8, 7, 3, rng)[4]
+    prof = (prof - prof.min()) / (np.ptp(prof) + 1e-6)
+    for x in range(lw):
+        px_ = min(w - 1, int(x * w / lw))
+        y = int(horizon - 6 - prof[px_] * lh * 0.20)
+        px_rect(c, x, y, 1, horizon - y, (16, 6, 34))
+        px_rect(c, x, y, 1, 1, (190, 40, 130))
+    px_rect(c, 0, horizon, lw, lh - horizon, (16, 6, 34))
+    span = max(1, lh - horizon)
+    for y in range(horizon + 3, lh, 5):                 # Gitter VOR der Straße
+        px_rect(c, 0, y, lw, 1, (190, 40, 130))
+    for y in range(horizon, lh):                        # Straße mit Rändern
+        t = (y - horizon) / span
+        halfw = 3 + int(t * lw * 0.46)
+        px_rect(c, int(lw * 0.5 - halfw), y, 2 * halfw, 1, (72, 18, 96))
+        px_rect(c, int(lw * 0.5 - halfw), y, 2, 1, (255, 255, 255))
+        px_rect(c, int(lw * 0.5 + halfw - 1), y, 2, 1, (255, 255, 255))
+    k = 0
+    for y in range(horizon + 4, lh, 5):                 # Mittelstriche
+        k += 1
+        if k % 2:
+            continue
+        t = (y - horizon) / span
+        wdt = 1 + int(t * 4)
+        px_rect(c, int(lw * 0.5 - wdt // 2), y, wdt + 1, 4, (255, 235, 150))
+    return px_out(c, w, h, "sunset", dither=0.45)
+
+
+def px_maze(w, h, rng, seed):
+    """Pixel-Art: Mazeduelle mit Pellets und Geistern."""
+    c, lw, lh = px_canvas(w, h)
+    bg, wall = (6, 6, 18), (36, 40, 140)
+    px_rect(c, 0, 0, lw, lh, bg)
+    blocks = [(2, 2, lw - 4, 3), (2, lh - 5, lw - 4, 3),
+              (2, 2, 3, lh - 4), (lw - 5, 2, 3, lh - 4),
+              (int(lw * 0.15), int(lh * 0.22), 32, 10),
+              (int(lw * 0.61), int(lh * 0.22), 32, 10),
+              (int(lw * 0.15), int(lh * 0.64), 32, 10),
+              (int(lw * 0.61), int(lh * 0.64), 32, 10),
+              (int(lw * 0.43), int(lh * 0.43), int(lw * 0.14), 11)]
+    for b in blocks:
+        px_hollow(c, b[0], b[1], b[2], b[3], wall, t=3)
+    halo = [(b[0] - 2, b[1] - 2, b[2] + 4, b[3] + 4) for b in blocks]
+
+    def free(x, y):
+        return not any(x0 <= x < x0 + ww and y0 <= y < y0 + hh
+                       for x0, y0, ww, hh in halo)
+
+    for y in range(9, lh - 9, 6):
+        for x in range(9, lw - 9, 6):
+            if free(x, y):
+                px_rect(c, x, y, 1, 1, (255, 255, 255))
+    for gx, gy in ((9, 9), (lw - 10, 9), (9, lh - 10), (lw - 10, lh - 10)):
+        px_circ(c, gx, gy, 2, (255, 210, 60))
+    cx, cy, r = int(lw * 0.30), int(lh * 0.87), 5        # Spielfigur
+    px_circ(c, cx, cy, r, (255, 210, 60))
+    for x in range(cx, cx + r + 1):
+        half = int((x - cx) * 1.15) + 1
+        px_rect(c, x, cy - half, 1, half, bg)
+        px_rect(c, x, cy + 1, 1, half, bg)
+    cols = [(240, 60, 70), (255, 80, 200), (0, 200, 255), (255, 210, 60)]
+    for i, col in enumerate(cols):
+        gx, gy = int(lw * 0.36) + i * 12, int(lh * 0.34)
+        px_sprite(c, GHOST, gx, gy, col)
+        px_rect(c, gx + 1, gy + 2, 2, 2, (255, 255, 255))
+        px_rect(c, gx + 5, gy + 2, 2, 2, (255, 255, 255))
+        px_rect(c, gx + 2, gy + 3, 1, 1, (36, 40, 140))
+        px_rect(c, gx + 6, gy + 3, 1, 1, (36, 40, 140))
+    return px_out(c, w, h, "arcade", dither=0.3)
+
+
+def px_snake(w, h, rng, seed):
+    """Pixel-Art: Snake-Board mit Apfel und HUD."""
+    c, lw, lh = px_canvas(w, h)
+    bg, grid, green, head, red = (6, 6, 18), (36, 40, 140), (70, 230, 110), \
+        (255, 255, 255), (240, 60, 70)
+    px_rect(c, 0, 0, lw, lh, bg)
+    px_rect(c, 0, 0, lw, 13, grid)                      # HUD-Leiste
+    px_hollow(c, 4, 16, lw - 8, lh - 21, grid, t=2)
+    cell = 7
+    for y in range(20, lh - 8, cell):
+        for x in range(8, lw - 8, cell):
+            px_rect(c, x, y, 1, 1, grid)
+    segs = []
+    sx, sy = 8 + cell, 20 + cell * 2
+    for i in range(9):
+        segs.append((sx + i * cell, sy))
+    for i in range(5):
+        segs.append((sx + 8 * cell, sy + (i + 1) * cell))
+    for i in range(6):
+        segs.append((sx + (8 - i) * cell, sy + 6 * cell))
+    for qx, qy in segs[:-1]:
+        px_rect(c, qx - 2, qy - 2, 5, 5, green)
+    hx, hy = segs[-1]
+    px_rect(c, hx - 3, hy - 3, 6, 6, head)              # Kopf
+    px_rect(c, hx + 1, hy - 4, 2, 2, green)             # Zunge
+    ax, ay = int(lw * 0.76), int(lh * 0.34)
+    px_circ(c, ax, ay, 3, red)
+    px_rect(c, ax, ay - 4, 1, 2, green)                 # Stiel
+    px_rect(c, ax + 1, ay - 2, 1, 1, (255, 255, 255))   # Glanz
+    px_rect(c, 5, 4, 5, 5, green)                       # HUD-Icon
+    for i in range(10):
+        px_rect(c, lw - 8 - i * 7, 4, 6, 5,
+                (255, 210, 60) if i < 6 else (6, 6, 18))
+    return px_out(c, w, h, "arcade", dither=0.3)
+
+
+def px_platform(w, h, rng, seed):
+    """Pixel-Art: Jump-’n’-Run-Szenerie."""
+    c, lw, lh = px_canvas(w, h)
+    px_grad(c, (92, 168, 248), (150, 210, 255))
+    for _ in range(4):                                  # Wolken
+        x0 = int(rng.integers(6, max(7, lw - 32)))
+        y0 = int(rng.integers(6, max(7, int(lh * 0.38))))
+        px_rect(c, x0, y0, 26, 6, (255, 255, 255))
+        px_rect(c, x0 + 5, y0 - 4, 16, 5, (255, 255, 255))
+        px_rect(c, x0 + 10, y0 - 7, 7, 4, (255, 255, 255))
+    gy = lh - 15
+    px_rect(c, 0, gy, lw, 15, (168, 112, 56))           # Boden
+    for y in range(gy, lh, 3):
+        px_rect(c, 0, y, lw, 1, (10, 10, 26))
+    for y in range(gy, lh, 6):                          # Backsteine
+        for x in range(((y // 6) % 2) * 8, lw, 16):
+            px_rect(c, x, y, 1, 3, (10, 10, 26))
+    plats = [(int(lw * 0.14), int(lh * 0.60), 34),
+             (int(lw * 0.50), int(lh * 0.44), 42),
+             (int(lw * 0.74), int(lh * 0.68), 30)]
+    for px_, py_, pw in plats:                          # Inseln
+        px_rect(c, px_, py_, pw, 5, (168, 112, 56))
+        px_rect(c, px_, py_ + 4, pw, 2, (10, 10, 26))
+        px_circ(c, px_ + pw // 2, py_ - 9, 3, (255, 210, 60))
+        px_rect(c, px_ + pw // 2 - 1, py_ - 11, 1, 5, (255, 210, 60))
+    px_sprite(c, HERO, int(lw * 0.28), gy - 8, (240, 70, 70))
+    px_rect(c, int(lw * 0.28) + 4, gy - 7, 2, 2, (255, 255, 255))
+    px_rect(c, lw - 26, gy - 6, 18, 6, (64, 160, 64))   # Busch
+    px_line(c, lw - 42, gy, lw - 42, gy - 26, (255, 255, 255))
+    px_rect(c, lw - 41, gy - 26, 14, 9, (70, 230, 110))     # Fahne
+    return px_out(c, w, h, "plat", dither=0.45)
+
+
+def px_boss(w, h, rng, seed):
+    """Pixel-Art: Bosskampf mit Lebensbalken und Explosionen."""
+    c, lw, lh = px_canvas(w, h)
+    px_grad(c, (4, 4, 14), (24, 26, 70))
+    for _ in range(lw * lh // 18):
+        px_rect(c, int(rng.integers(0, lw)), int(rng.integers(0, lh)),
+                1, 1, (255, 255, 255) if rng.random() < 0.8 else (0, 230, 255))
+    bx, by = int(lw / 2 - 10), int(lh * 0.16)
+    px_sprite(c, BOSS, bx, by, (255, 70, 170))
+    px_rect(c, bx + 6, by + 4, 3, 2, (255, 255, 255))   # Augen
+    px_rect(c, bx + 13, by + 4, 3, 2, (255, 255, 255))
+    px_rect(c, bx + 7, by + 5, 1, 1, (4, 4, 14))
+    px_rect(c, bx + 14, by + 5, 1, 1, (4, 4, 14))
+    bw = int(lw * 0.6)                                   # Lebensbalken
+    px_hollow(c, int(lw * 0.2), 4, bw, 8, (255, 255, 255), t=1)
+    px_rect(c, int(lw * 0.2) + 2, 6, int(bw * 0.68) - 4, 4, (70, 230, 110))
+    px_rect(c, int(lw * 0.2) + int(bw * 0.68) - 2, 6, bw - int(bw * 0.68), 4,
+            (240, 60, 70))
+    sx = lw // 2 - 4                                      # Spieler + Laser
+    px_sprite(c, SHIP, sx, lh - 20, (0, 230, 255))
+    px_line(c, sx + 4, lh - 21, bx + 6, by + 13, (0, 230, 255))
+    px_line(c, sx + 4, lh - 21, bx + 14, by + 13, (0, 230, 255))
+    for ex, ey, er in ((bx - 7, by + 9, 5), (bx + 27, by + 5, 4),
+                       (bx + 10, by + 17, 6)):           # Explosionen
+        px_circ(c, ex, ey, er, (255, 170, 60))
+        px_circ(c, ex, ey, max(1, er - 2), (255, 220, 80))
+        px_circ(c, ex, ey, max(1, er - 4), (255, 255, 255))
+    px_rect(c, 0, lh - 9, lw, 9, (4, 4, 14))             # HUD
+    for i in range(3):
+        px_rect(c, 5 + i * 8, lh - 7, 6, 5, (140, 255, 160))
+    for i in range(9):
+        px_rect(c, lw - 7 - i * 7, lh - 7, 6, 5,
+                (255, 220, 80) if i < 6 else (24, 26, 70))
+    return px_out(c, w, h, "space")
+
+
+def px_racer(w, h, rng, seed):
+    """Pixel-Art: Rennstrecke in Pseudo-3D-Perspektive."""
+    c, lw, lh = px_canvas(w, h)
+    px_grad(c, (16, 6, 34), (190, 40, 130))
+    horizon = int(lh * 0.45)
+    px_circ(c, lw * 0.5, horizon - 11, 15, (255, 170, 60))
+    prof = smooth_noise(w, 8, 8, 3, rng)[3]
+    prof = (prof - prof.min()) / (np.ptp(prof) + 1e-6)
+    for x in range(lw):
+        yy = int(horizon - 4 - prof[min(w - 1, int(x * w / lw))] * lh * 0.10)
+        px_rect(c, x, yy, 1, horizon - yy, (16, 6, 34))
+    curve = lw * 0.12
+    span = max(1, lh - horizon)
+    for y in range(horizon, lh):
+        t = (y - horizon) / span
+        center = lw * 0.5 + curve * (1 - t) ** 2
+        halfw = 3 + int(t * lw * 0.46)
+        px_rect(c, int(center - halfw), y, 2 * halfw, 1, (16, 6, 34))
+        px_rect(c, int(center - halfw), y, 2, 1, (255, 255, 255))
+        px_rect(c, int(center + halfw - 2), y, 2, 1, (255, 255, 255))
+    k = 0
+    for y in range(horizon + 2, lh, 4):
+        k += 1
+        if k % 2:
+            continue
+        t = (y - horizon) / span
+        center = lw * 0.5 + curve * (1 - t) ** 2
+        wdt = 1 + int(t * 4)
+        px_rect(c, int(center - wdt // 2), y, wdt + 1, 3, (255, 235, 150))
+    t_r = 0.20                                            # Gegnerwagen
+    px_sprite(c, CAR, int(lw * 0.52 + curve * (1 - t_r) ** 2 - 4),
+              int(horizon + span * t_r), (255, 90, 90))
+    px_sprite(c, CAR, int(lw * 0.5 - 9), lh - 28, (255, 235, 150), sc=2)
+    px_rect(c, 0, lh - 9, lw, 9, (16, 6, 34))            # HUD
+    for i in range(14):
+        px_rect(c, 5 + i * 5, lh - 7, 4, 4,
+                (255, 170, 60) if i < 9 else (72, 18, 96))
+    return px_out(c, w, h, "sunset", dither=0.45)
+
+
+def px_gbland(w, h, rng, seed):
+    """Pixel-Art: Game-Boy-Landschaft in den 4 Original-Tönen."""
+    c, lw, lh = px_canvas(w, h)
+    dark, mid, light, lightest = PALS["gb"]
+    px_grad(c, lightest, light)
+    horizon = int(lh * 0.60)
+    sx_, sy_ = lw * 0.72, lh * 0.24
+    px_circ(c, sx_, sy_, 13, mid)                        # Sonne mit Rand
+    px_circ(c, sx_, sy_, 12, lightest)
+    for k in range(3):                                   # Vögel
+        bx = int(lw * (0.14 + 0.11 * k))
+        by = int(lh * (0.16 + 0.07 * (k % 2)))
+        px_rect(c, bx, by, 3, 1, dark)
+        px_rect(c, bx - 1, by - 1, 2, 1, dark)
+        px_rect(c, bx + 3, by - 1, 2, 1, dark)
+        px_rect(c, bx + 4, by, 2, 1, dark)
+    prof_f = smooth_noise(w, 10, 6, 4, rng)[7]
+    prof_f = (prof_f - prof_f.min()) / (np.ptp(prof_f) + 1e-6)
+    prof_n = smooth_noise(w, 10, 10, 4, rng)[7]
+    prof_n = (prof_n - prof_n.min()) / (np.ptp(prof_n) + 1e-6)
+    for x in range(lw):                                  # Berge (hinten)
+        px_ = min(w - 1, int(x * w / lw))
+        y = int(horizon - prof_f[px_] * lh * 0.28)
+        px_rect(c, x, y, 1, horizon - y, light)
+        px_rect(c, x, y, 1, 1, lightest)
+    for x in range(lw):                                  # Hügel (vorn)
+        px_ = min(w - 1, int(x * w / lw))
+        y = int(horizon - prof_n[px_] * lh * 0.13)
+        px_rect(c, x, y, 1, horizon - y, mid)
+        px_rect(c, x, y, 1, 1, lightest)
+    px_rect(c, 0, horizon, lw, lh - horizon, dark)       # See
+    for y in range(horizon + 2, lh, 4):                  # Reflexe
+        px_rect(c, int(lw * 0.55), y, int(lw * 0.30), 1, mid)
+        px_rect(c, int(lw * 0.05), y + 2, int(lw * 0.22), 1, mid)
+    for k in range(4):                                   # Bäume
+        tx = int(lw * (0.08 + 0.24 * k))
+        ty = horizon - int(lh * (0.05 + 0.03 * (k % 2)))
+        px_rect(c, tx, ty - 10, 3, 10, dark)
+        px_rect(c, tx - 3, ty - 14, 9, 5, dark)
+        px_rect(c, tx - 1, ty - 17, 5, 4, dark)
+    return px_out(c, w, h, "gb", dither=0.85)
+
+
+def px_moon(w, h, rng, seed):
+    """Pixel-Art: Mondlandung mit Landegerät und Fahne."""
+    c, lw, lh = px_canvas(w, h)
+    px_grad(c, (4, 4, 14), (24, 26, 70))
+    for _ in range(lw * lh // 16):
+        col = (255, 255, 255) if rng.random() < 0.75 else (0, 230, 255)
+        px_rect(c, int(rng.integers(0, lw)), int(rng.integers(0, lh)),
+                1, 1, col)
+    ex, ey, er = lw * 0.17, lh * 0.22, 13                # Erde
+    px_circ(c, ex + 3, ey + 3, er, (4, 4, 14))
+    px_circ(c, ex, ey, er, (60, 90, 200))
+    px_circ(c, ex, ey, er, (0, 230, 255), hollow=True)
+    gh = int(lh * 0.74)
+    prof = smooth_noise(w, 8, 6, 4, rng)[5]
+    prof = (prof - prof.min()) / (np.ptp(prof) + 1e-6)
+    for x in range(lw):                                  # Mondhügel
+        px_ = min(w - 1, int(x * w / lw))
+        y = int(gh - prof[px_] * lh * 0.07)
+        px_rect(c, x, y, 1, lh - y, (24, 26, 70))
+        px_rect(c, x, y, 1, 1, (60, 90, 200))
+    for _ in range(7):                                   # Krater
+        pxk = int(rng.integers(4, lw - 4))
+        pyk = int(rng.integers(gh + 5, lh - 4))
+        rk = int(rng.integers(2, 5))
+        px_circ(c, pxk, pyk, rk, (4, 4, 14))
+        px_circ(c, pxk, pyk, rk, (60, 90, 200), hollow=True)
+    lx = int(lw * 0.55)                                  # Landegerät
+    px_sprite(c, LANDER, lx, gh - 8, (255, 255, 255))
+    px_rect(c, lx + 4, gh, 3, 3, (255, 220, 80))
+    px_rect(c, lx + 5, gh + 2, 1, 2, (255, 70, 170))
+    fx = int(lw * 0.30)                                  # Fahne
+    px_line(c, fx, gh + 1, fx, gh - 17, (255, 255, 255))
+    px_rect(c, fx + 1, gh - 17, 11, 7, (255, 70, 170))
+    px_rect(c, fx + 2, gh - 16, 3, 2, (255, 255, 255))
+    return px_out(c, w, h, "space")
+
+
 BUILDERS = {"grid": m_grid, "nebula": m_nebula, "burst": m_burst,
             "tunnel": m_tunnel, "city": m_city, "ridges": m_ridges,
             "aurora": m_aurora, "eclipse": m_eclipse, "plasma": m_plasma,
             "topo": m_topo, "circuit": m_circuit, "rain": m_rain,
             "fireworks": m_fireworks, "galaxy": m_galaxy,
             "highway": m_highway, "shards": m_shards, "eq": m_eq,
-            "lightning": m_lightning, "orbit": m_orbit}
+            "lightning": m_lightning, "orbit": m_orbit,
+            "px_space": px_space, "px_invader": px_invader,
+            "px_sunset": px_sunset, "px_maze": px_maze, "px_snake": px_snake,
+            "px_platform": px_platform, "px_boss": px_boss,
+            "px_racer": px_racer, "px_gbland": px_gbland, "px_moon": px_moon}
 
 
 # -------------------------------------------------------------- API -----
