@@ -6,3 +6,6 @@ venv/
 
 # lokaler Spielstand
 neon_vanguard_highscore.txt
+
+# persönliche Wallpapers (Gallery in art/ bleibt im Repo)
+art/wallpaper_*.png

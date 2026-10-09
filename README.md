@@ -45,6 +45,7 @@ entities.py  Spieler, Kugeln, 5 Gegnertypen, Boss, Powerups
 gfx.py       Glow-Sprites, Bloom, Sternenhimmel, Partikel, Floating Text
 audio.py     prozedurale Sound-Engine + prozedurale Loop-Musik (numpy)
 settings.py  Konstanten und Farbpalette
+neon_art.py  prozeduraler Art-/Wallpaper-Generator (PNG, ohne Display)
 ```
 
 ## Technik
@@ -61,6 +62,29 @@ settings.py  Konstanten und Farbpalette
   mit 3 Phasen (gezielter Salvo → Ring-Burst → Spirale).
 - **Performance:** ~6 ms pro Frame bei 1280×720 (Update + Render + Bloom),
   deutlich über 60 fps.
+
+## Art-Generator
+
+`neon_art.py` erzeugt Wallpaper und Key-Art im Look des Spiels – wie die
+Sounds und die Spielgrafik selbst komplett aus Zahlen berechnet, ohne eine
+einzige Bilddatei als Vorlage. Läuft ohne Display (nur `numpy`) und schreibt
+PNGs.
+
+```bash
+python neon_art.py --list
+python neon_art.py grid --size 1920x1080 --seed 7 --out art/grid.png
+python neon_art.py all --size 1280x720 --out art
+```
+
+Vier Motive, jedes mit eigenem Seed reproduzierbar:
+
+| `grid` – Synthwave-Horizont | `nebula` – Sternennebel |
+|---|---|
+| ![grid](art/grid.png) | ![nebula](art/nebula.png) |
+
+| `burst` – Explosion | `tunnel` – Vortex |
+|---|---|
+| ![burst](art/burst.png) | ![tunnel](art/tunnel.png) |
 
 ## Dateien
 
